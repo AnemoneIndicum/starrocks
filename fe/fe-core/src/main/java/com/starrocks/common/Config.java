@@ -129,7 +129,7 @@ public class Config extends ConfigBase {
     @ConfField
     public static int audit_log_roll_num = 90;
     @ConfField
-    public static String[] audit_log_modules = {"slow_query", "query", "connection"};
+    public static String[] audit_log_modules = {"slow_query", "query"};
     @ConfField(mutable = true)
     public static long qe_slow_log_ms = 5000;
     @ConfField
@@ -888,8 +888,8 @@ public class Config extends ConfigBase {
      * Currently, it only limits the load task of broker load, pending and loading phases.
      * It should be less than 'max_running_txn_num_per_db'
      */
-    @ConfField
-    public static int async_load_task_pool_size = 2;
+    @ConfField(mutable = true, aliases = {"async_load_task_pool_size"})
+    public static int max_broker_load_job_concurrency = 2;
 
     /**
      * Same meaning as *tablet_create_timeout_second*, but used when delete a tablet.
@@ -1321,11 +1321,6 @@ public class Config extends ConfigBase {
     @ConfField
     public static boolean enable_metric_calculator = true;
 
-    /**
-     * the max routine load job num, including NEED_SCHEDULED, RUNNING, PAUSE
-     */
-    @ConfField(mutable = true)
-    public static int max_routine_load_job_num = 100;
 
     /**
      * the max concurrent routine load task num of a single routine load job
@@ -1335,12 +1330,10 @@ public class Config extends ConfigBase {
 
     /**
      * the max concurrent routine load task num per BE.
-     * This is to limit the num of routine load tasks sending to a BE, and it should also less
-     * than BE config 'routine_load_thread_pool_size'(default 10),
-     * which is the routine load task thread pool size on BE.
+     * This is to limit the num of routine load tasks sending to a BE.
      */
     @ConfField(mutable = true)
-    public static int max_routine_load_task_num_per_be = 5;
+    public static int max_routine_load_task_num_per_be = 16;
 
     /**
      * max load size for each routine load task
@@ -2039,10 +2032,7 @@ public class Config extends ConfigBase {
     @ConfField
     public static int cloud_native_meta_port = 6090;
     // remote storage related configuration
-    /**
-     * storage type for cloud native table. Available options: "S3", "HDFS", "AZBLOB". case-insensitive
-     */
-    @ConfField
+    @ConfField(comment = "storage type for cloud native table. Available options: \"S3\", \"HDFS\", \"AZBLOB\". case-insensitive")
     public static String cloud_native_storage_type = "S3";
 
     // HDFS storage configuration
@@ -2197,11 +2187,8 @@ public class Config extends ConfigBase {
     @ConfField(mutable = true)
     public static double lake_compaction_score_selector_min_score = 10.0;
 
-    /**
-     * -1 means calculate the value in an adaptive way.
-     * 0 will disable compaction.
-     */
-    @ConfField
+    @ConfField(mutable = true, comment = "-1 means calculate the value in an adaptive way. set this value to 0 " +
+            "will disable compaction.")
     public static int lake_compaction_max_tasks = -1;
 
     @ConfField(mutable = true)
@@ -2213,23 +2200,23 @@ public class Config extends ConfigBase {
     @ConfField
     public static int experimental_lake_publish_version_threads = 16;
 
-    @ConfField(mutable = true)
+    @ConfField(mutable = true, comment = "the max number of previous version files to keep")
     public static int lake_autovacuum_max_previous_versions = 0;
 
-    @ConfField
+    @ConfField(comment = "how many partitions can autovacuum be executed simultaneously at most")
     public static int lake_autovacuum_parallel_partitions = 8;
 
-    @ConfField(mutable = true)
+    @ConfField(mutable = true, comment = "the minimum delay between autovacuum runs on any given partition")
     public static long lake_autovacuum_partition_naptime_seconds = 180;
 
-    @ConfField(mutable = true)
+    @ConfField(mutable = true, comment = "History versions within this time range will not be deleted by auto vacuum.\n" +
+            "REMINDER: Set this to a value longer than the maximum possible execution time of queries, to avoid deletion of " +
+            "versions still being accessed.\n" +
+            "NOTE: Increasing this value may increase the space usage of the remote storage system.")
     public static long lake_autovacuum_grace_period_minutes = 5;
 
-    /**
-     * time threshold in hours, if a partition has not been updated for longer than this
-     * threshold, auto vacuum operations will no longer be triggered for that partition.
-     */
-    @ConfField(mutable = true)
+    @ConfField(mutable = true, comment = "time threshold in hours, if a partition has not been updated for longer than this " +
+            "threshold, auto vacuum operations will no longer be triggered for that partition")
     public static long lake_autovacuum_stale_partition_threshold = 12;
 
     @ConfField(mutable = true)
@@ -2341,7 +2328,7 @@ public class Config extends ConfigBase {
      * Enable auto create tablet when creating table and add partition
      **/
     @ConfField(mutable = true)
-    public static boolean enable_auto_tablet_distribution = false;
+    public static boolean enable_auto_tablet_distribution = true;
 
     /**
      * default size of minimum cache size of auto increment id allocation

@@ -279,7 +279,11 @@ CONF_mString(storage_page_cache_limit, "20%");
 // whether to disable page cache feature in storage
 CONF_mBool(disable_storage_page_cache, "false");
 // whether to enable the bitmap index memory cache
-CONF_mBool(enable_bitmap_memory_page_cache, "false");
+CONF_mBool(enable_bitmap_index_memory_page_cache, "false");
+// whether to enable the zonemap index memory cache
+CONF_mBool(enable_zonemap_index_memory_page_cache, "false");
+// whether to enable the ordinal index memory cache
+CONF_mBool(enable_ordinal_index_memory_page_cache, "false");
 // whether to disable column pool
 CONF_Bool(disable_column_pool, "false");
 
@@ -306,6 +310,7 @@ CONF_mInt32(update_compaction_num_threads_per_disk, "1");
 CONF_Int32(update_compaction_per_tablet_min_interval_seconds, "120"); // 2min
 CONF_mInt64(max_update_compaction_num_singleton_deltas, "1000");
 CONF_mInt64(update_compaction_size_threshold, "268435456");
+CONF_mInt64(update_compaction_result_bytes, "1073741824");
 
 CONF_mInt32(repair_compaction_interval_seconds, "600"); // 10 min
 CONF_Int32(manual_compaction_threads, "4");
@@ -326,6 +331,9 @@ CONF_mInt32(max_compaction_concurrency, "-1");
 
 // Threshold to logging compaction trace, in seconds.
 CONF_mInt32(compaction_trace_threshold, "60");
+
+// If enabled, will verify compaction/schema-change output rowset correctness
+CONF_mBool(enable_rowset_verify, "false");
 
 // Max columns of each compaction group.
 // If the number of schema columns is greater than this,
@@ -511,10 +519,6 @@ CONF_mInt32(max_consumer_num_per_group, "3");
 // Max pulsar consumer num in one data consumer group, for routine load.
 CONF_mInt32(max_pulsar_consumer_num_per_group, "10");
 
-// The size of thread pool for routine load task.
-// this should be larger than FE config 'max_routine_load_task_num_per_be' (default 5).
-CONF_Int32(routine_load_thread_pool_size, "10");
-
 // kafka reqeust timeout
 CONF_Int32(routine_load_kafka_timeout_second, "10");
 
@@ -564,7 +568,7 @@ CONF_mInt32(path_scan_interval_second, "86400");
 // The percent of max used capacity of a data dir
 CONF_mInt32(storage_flood_stage_usage_percent, "95"); // 95%
 // The min bytes that should be left of a data dir
-CONF_mInt64(storage_flood_stage_left_capacity_bytes, "1073741824"); // 1GB
+CONF_mInt64(storage_flood_stage_left_capacity_bytes, "107374182400"); // 100GB
 // Number of thread for flushing memtable per store.
 CONF_mInt32(flush_thread_num_per_store, "2");
 
@@ -761,6 +765,7 @@ CONF_Bool(parquet_late_materialization_enable, "true");
 
 CONF_Int32(io_coalesce_read_max_buffer_size, "8388608");
 CONF_Int32(io_coalesce_read_max_distance_size, "1048576");
+CONF_mBool(io_coalesce_adaptive_lazy_active, "true");
 CONF_Int32(io_tasks_per_scan_operator, "4");
 CONF_Int32(connector_io_tasks_per_scan_operator, "16");
 CONF_Int32(connector_io_tasks_min_size, "2");

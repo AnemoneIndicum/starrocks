@@ -396,11 +396,6 @@ HdfsScanner* HiveDataSource::_create_hudi_jni_scanner() {
     jni_scanner_params["serde"] = hudi_table->get_serde_lib();
     jni_scanner_params["input_format"] = hudi_table->get_input_format();
 
-#ifndef NDEBUG
-    for (const auto& it : jni_scanner_params) {
-        VLOG_FILE << "jni scanner params. key = " << it.first << ", value = " << it.second;
-    }
-#endif
     std::string scanner_factory_class = "com/starrocks/hudi/reader/HudiSliceScannerFactory";
     HdfsScanner* scanner = _pool.add(new JniScanner(scanner_factory_class, jni_scanner_params));
     return scanner;
@@ -424,12 +419,8 @@ HdfsScanner* HiveDataSource::_create_paimon_jni_scanner() {
     jni_scanner_params["table_name"] = paimon_table->get_table_name();
     jni_scanner_params["required_fields"] = required_fields;
     jni_scanner_params["split_info"] = _scan_range.paimon_split_info;
+    jni_scanner_params["predicate_info"] = _scan_range.paimon_predicate_info;
 
-#ifndef NDEBUG
-    for (const auto& it : jni_scanner_params) {
-        VLOG_FILE << "jni scanner params. key = " << it.first << ", value = " << it.second;
-    }
-#endif
     std::string scanner_factory_class = "com/starrocks/paimon/reader/PaimonSplitScannerFactory";
     HdfsScanner* scanner = _pool.add(new JniScanner(scanner_factory_class, jni_scanner_params));
     return scanner;
@@ -482,6 +473,7 @@ Status HiveDataSource::_init_scanner(RuntimeState* state) {
     scanner_params.case_sensitive = _case_sensitive;
     scanner_params.profile = &_profile;
     scanner_params.open_limit = nullptr;
+    scanner_params.lazy_column_coalesce_counter = get_lazy_column_coalesce_counter();
     for (const auto& delete_file : scan_range.delete_files) {
         scanner_params.deletes.emplace_back(&delete_file);
     }

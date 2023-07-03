@@ -22,7 +22,7 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.Tablet;
 import com.starrocks.common.Config;
-import com.starrocks.common.util.Daemon;
+import com.starrocks.common.util.FrontendDaemon;
 import com.starrocks.lake.LakeTablet;
 import com.starrocks.lake.Utils;
 import com.starrocks.proto.VacuumRequest;
@@ -33,6 +33,7 @@ import com.starrocks.rpc.RpcException;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.system.ComputeNode;
 import com.starrocks.system.HeartbeatMgr;
+import org.apache.hadoop.util.BlockingThreadPoolExecutorService;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -41,28 +42,28 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
-public class AutovacuumDaemon extends Daemon {
+public class AutovacuumDaemon extends FrontendDaemon {
     private static final Logger LOG = LogManager.getLogger(AutovacuumDaemon.class);
 
     private static final long MILLISECONDS_PER_SECOND = 1000;
     private static final long SECONDS_PER_MINUTE = 60;
     private static final long MINUTES_PER_HOUR = 60;
     private static final long MILLISECONDS_PER_HOUR = MINUTES_PER_HOUR * SECONDS_PER_MINUTE * MILLISECONDS_PER_SECOND;
-
+ 
     private final Set<Long> vacuumingPartitions = Sets.newConcurrentHashSet();
-    private final Executor executor = Executors.newFixedThreadPool(Config.lake_autovacuum_parallel_partitions);
+    private final BlockingThreadPoolExecutorService executorService = BlockingThreadPoolExecutorService.newInstance(
+            Config.lake_autovacuum_parallel_partitions, 0, 1, TimeUnit.HOURS, "autovacuum");
 
     public AutovacuumDaemon() {
         super("autovacuum", 2000);
     }
 
     @Override
-    protected void runOneCycle() {
+    protected void runAfterCatalogReady() {
         List<Long> dbIds = GlobalStateMgr.getCurrentState().getDbIds();
         for (Long dbId : dbIds) {
             Database db = GlobalStateMgr.getCurrentState().getDb(dbId);
@@ -103,7 +104,7 @@ public class AutovacuumDaemon extends Daemon {
 
         for (Partition partition : partitions) {
             if (vacuumingPartitions.add(partition.getId())) {
-                executor.execute(() -> vacuumPartition(db, table, partition));
+                executorService.execute(() -> vacuumPartition(db, table, partition));
             }
         }
     }

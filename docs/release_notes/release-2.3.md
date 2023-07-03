@@ -2,27 +2,26 @@
 
 ## 2.3.14
 
-Release date: June 27, 2023
+Release date: June 28, 2023
 
 ### Improvements
 
-- Optimized the I/O concurrency of Scan nodes used in external table queries, which reduces memory usage and improves the stability of data loading from external tables. [#23617](https://github.com/StarRocks/starrocks/pull/23617) [#23624](https://github.com/StarRocks/starrocks/pull/23624) [#23626](https://github.com/StarRocks/starrocks/pull/23626)
-- Optimized the error message for Broker Load jobs. The error message contains retry information and the name of erroneous files. [#18038](https://github.com/StarRocks/starrocks/pull/18038) [#21982](https://github.com/StarRocks/starrocks/pull/21982)
 - Optimized the error message returned when CREATE TABLE times out and added parameter tuning tips. [#24510](https://github.com/StarRocks/starrocks/pull/24510)
-- Optimized the error message returned when ALTER TABLE fails because the table status is not Normal. [#24381](https://github.com/StarRocks/starrocks/pull/24381)
-- Ignores full-width spaces in the CREATE TABLE statement. [#23885](https://github.com/StarRocks/starrocks/pull/23885)
-- Optimized the Broker access timeout to increase the success rate of Broker Load jobs. [#22699](https://github.com/StarRocks/starrocks/pull/22699)
-- For Primary Key tables, the `VersionCount` field returned by SHOW TABLET contains Rowsets that are in the Pending state. [#23847](https://github.com/StarRocks/starrocks/pull/23847)
-- Optimized the Persistent Index policy. [#22140](https://github.com/StarRocks/starrocks/pull/22140)
+- Optimized the memory usage for the Primary Key tables with a large number of accumulated tablet versions. [#20760](https://github.com/StarRocks/starrocks/pull/20760)
+- The synchronization of OLAP external table metadata has been changed to occur during data loading. [#24739](https://github.com/StarRocks/starrocks/pull/24739)
+- Removed the dependency of NetworkTime on system clocks to fix incorrect NetworkTime caused by inconsistent system clocks across servers. [#24858](https://github.com/StarRocks/starrocks/pull/24858)
 
 ### Bug Fixes
 
 Fixed the following issues:
 
-- When users load Parquet data into StarRocks, DATETIME values overflow during type conversion, causing data errors. [#22356](https://github.com/StarRocks/starrocks/pull/22356)
-- Bucket information is lost after Dynamic Partitioning is disabled. [#22595](https://github.com/StarRocks/starrocks/pull/22595)
-- Using unsupported properties in the CREATE TABLE statement causes null pointer exceptions (NPEs). [#23859](https://github.com/StarRocks/starrocks/pull/23859)
-- Table permission filtering in `information_schema` becomes ineffective. As a result, users can view tables they do not have permission to. [#23804](https://github.com/StarRocks/starrocks/pull/23804)
+- When low cardinality dictionary optimization is applied for small tables that undergo frequent TRUNCATE operations, queries may encounter errors. [#23185](https://github.com/StarRocks/starrocks/pull/23185)
+- BEs may crash when a view that contains UNION whose first child is a constant NULL is queried. [#13792](https://github.com/StarRocks/starrocks/pull/13792)  
+- In some cases, a query based on Bitmap Index may return an error. [#23484](https://github.com/StarRocks/starrocks/pull/23484)
+- The result of rounding a DOUBLE or FLOAT value into a DECIMAL value in BEs is inconsistent with the result in FEs. [#23152](https://github.com/StarRocks/starrocks/pull/23152)
+- A schema change sometimes may be hung if data loading occurs simultaneously with the schema change. [#23456](https://github.com/StarRocks/starrocks/pull/23456)
+- When you load a Parquet file into StarRocks by using Broker Load, Spark connector or Flink connector, BE OOM issues may occur. [#25254](https://github.com/StarRocks/starrocks/pull/25254)
+- The error message `unknown error` is returned when a constant is specified in the ORDER BY clause and there is a LIMIT clause in the query. [#25538](https://github.com/StarRocks/starrocks/pull/25538)
 
 ## 2.3.13
 

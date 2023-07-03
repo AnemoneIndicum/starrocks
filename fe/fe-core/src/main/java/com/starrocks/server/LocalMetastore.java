@@ -47,6 +47,7 @@ import com.staros.proto.FilePathInfo;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.FunctionCallExpr;
 import com.starrocks.analysis.IntLiteral;
+import com.starrocks.analysis.SlotRef;
 import com.starrocks.analysis.StringLiteral;
 import com.starrocks.analysis.TableName;
 import com.starrocks.analysis.TableRef;
@@ -79,6 +80,7 @@ import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.PartitionKey;
 import com.starrocks.catalog.PartitionType;
+import com.starrocks.catalog.PrimitiveType;
 import com.starrocks.catalog.RandomDistributionInfo;
 import com.starrocks.catalog.RangePartitionInfo;
 import com.starrocks.catalog.Replica;
@@ -185,6 +187,7 @@ import com.starrocks.sql.ast.DistributionDesc;
 import com.starrocks.sql.ast.DropMaterializedViewStmt;
 import com.starrocks.sql.ast.DropPartitionClause;
 import com.starrocks.sql.ast.DropTableStmt;
+import com.starrocks.sql.ast.ExpressionPartitionDesc;
 import com.starrocks.sql.ast.MultiItemListPartitionDesc;
 import com.starrocks.sql.ast.MultiRangePartitionDesc;
 import com.starrocks.sql.ast.PartitionConvertContext;
@@ -1973,7 +1976,7 @@ public class LocalMetastore implements ConnectorMetadata {
 
             db.writeLock();
             try {
-                if (!db.registerTableUnlock(table)) {
+                if (!db.registerTableUnlocked(table)) {
                     if (!isSetIfNotExists) {
                         if (table instanceof OlapTable) {
                             OlapTable olapTable = (OlapTable) table;
@@ -2004,7 +2007,7 @@ public class LocalMetastore implements ConnectorMetadata {
         Database db = this.fullNameToDb.get(info.getDbName());
         db.writeLock();
         try {
-            db.registerTableUnlock(table);
+            db.registerTableUnlocked(table);
             table.onReload();
         } finally {
             db.writeUnlock();
@@ -2817,7 +2820,7 @@ public class LocalMetastore implements ConnectorMetadata {
             // set storage medium
             boolean hasMedium = properties.containsKey(PropertyAnalyzer.PROPERTIES_STORAGE_MEDIUM);
             dataProperty = PropertyAnalyzer.analyzeDataProperty(properties,
-                    DataProperty.getInferredDefaultDataProperty());
+                    DataProperty.getInferredDefaultDataProperty(), false);
             if (hasMedium && dataProperty.getStorageMedium() == TStorageMedium.SSD) {
                 materializedView.setStorageMedium(dataProperty.getStorageMedium());
                 // set storage cooldown time into table property,
@@ -2940,16 +2943,22 @@ public class LocalMetastore implements ConnectorMetadata {
     }
 
     public static PartitionInfo buildPartitionInfo(CreateMaterializedViewStatement stmt) throws DdlException {
-        PartitionDesc partitionDesc = stmt.getPartitionExpDesc();
-        PartitionInfo partitionInfo;
-        if (partitionDesc != null) {
-            partitionInfo = partitionDesc.toPartitionInfo(
-                    Collections.singletonList(stmt.getPartitionColumn()),
-                    Maps.newHashMap(), false);
+        ExpressionPartitionDesc expressionPartitionDesc = stmt.getPartitionExpDesc();
+        if (expressionPartitionDesc != null) {
+            Expr expr = expressionPartitionDesc.getExpr();
+            if (expr instanceof SlotRef) {
+                SlotRef slotRef = (SlotRef) expr;
+                if (slotRef.getType().getPrimitiveType() == PrimitiveType.VARCHAR) {
+                    return new ListPartitionInfo(PartitionType.LIST,
+                            Collections.singletonList(stmt.getPartitionColumn()));
+                }
+            }
+            return expressionPartitionDesc.toPartitionInfo(
+                        Collections.singletonList(stmt.getPartitionColumn()),
+                        Maps.newHashMap(), false);
         } else {
-            partitionInfo = new SinglePartitionInfo();
+            return  new SinglePartitionInfo();
         }
-        return partitionInfo;
     }
 
     private void createTaskForMaterializedView(String dbName, MaterializedView materializedView,
@@ -3169,7 +3178,7 @@ public class LocalMetastore implements ConnectorMetadata {
             olapTable.checkAndSetName(newTableName, false);
 
             db.dropTable(oldTableName);
-            db.registerTableUnlock(olapTable);
+            db.registerTableUnlocked(olapTable);
             disableMaterializedViewForRenameTable(db, olapTable);
         } finally {
             db.writeUnlock();
@@ -3214,7 +3223,7 @@ public class LocalMetastore implements ConnectorMetadata {
             String tableName = table.getName();
             db.dropTable(tableName);
             table.setName(newTableName);
-            db.registerTableUnlock(table);
+            db.registerTableUnlocked(table);
             disableMaterializedViewForRenameTable(db, table);
 
             LOG.info("replay rename table[{}] to {}, tableId: {}", tableName, newTableName, table.getId());
@@ -3374,13 +3383,29 @@ public class LocalMetastore implements ConnectorMetadata {
                 throw new DdlException(ex.getMessage());
             }
         }
+        DataProperty dataProperty = DataProperty.getInferredDefaultDataProperty();
+        if (properties.containsKey(PropertyAnalyzer.PROPERTIES_STORAGE_MEDIUM)) {
+            try {
+                dataProperty = PropertyAnalyzer.analyzeDataProperty(properties, dataProperty, false);
+            } catch (AnalysisException ex) {
+                throw new RuntimeException(ex.getMessage());
+            }
+        }
         if (!properties.isEmpty()) {
             throw new DdlException("Modify failed because unknown properties: " + properties);
         }
         TableProperty tableProperty = table.getTableProperty();
-        tableProperty.getProperties().put(PropertyAnalyzer.PROPERTIES_PARTITION_LIVE_NUMBER,
-                String.valueOf(partitionLiveNumber));
-        tableProperty.setPartitionTTLNumber(partitionLiveNumber);
+        if (logProperties.containsKey(PropertyAnalyzer.PROPERTIES_PARTITION_LIVE_NUMBER)) {
+            tableProperty.getProperties().put(PropertyAnalyzer.PROPERTIES_PARTITION_LIVE_NUMBER,
+                    String.valueOf(partitionLiveNumber));
+            tableProperty.setPartitionTTLNumber(partitionLiveNumber);
+        } else if (logProperties.containsKey(PropertyAnalyzer.PROPERTIES_STORAGE_MEDIUM)) {
+            TStorageMedium storageMedium = dataProperty.getStorageMedium();
+            table.setStorageMedium(storageMedium);
+            tableProperty.getProperties()
+                    .put(PropertyAnalyzer.PROPERTIES_STORAGE_COOLDOWN_TIME,
+                            String.valueOf(dataProperty.getCooldownTimeMs()));
+        }
 
         ModifyTablePropertyOperationLog info =
                 new ModifyTablePropertyOperationLog(db.getId(), table.getId(), logProperties);
@@ -4619,7 +4644,7 @@ public class LocalMetastore implements ConnectorMetadata {
             int tableSize = reader.readInt();
             for (int j = 0; j < tableSize; ++j) {
                 Table table = reader.readJson(Table.class);
-                db.registerTableUnlock(table);
+                db.registerTableUnlocked(table);
             }
 
             idToDb.put(db.getId(), db);

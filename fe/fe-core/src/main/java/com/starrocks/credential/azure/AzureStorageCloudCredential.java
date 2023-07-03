@@ -15,15 +15,16 @@
 package com.starrocks.credential.azure;
 
 import com.google.common.base.Preconditions;
+import com.staros.proto.AzBlobCredentialInfo;
+import com.staros.proto.AzBlobFileStoreInfo;
 import com.staros.proto.FileStoreInfo;
+import com.staros.proto.FileStoreType;
 import com.starrocks.credential.CloudCredential;
-import com.starrocks.thrift.TCloudProperty;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 // For Azure Blob Storage (wasb:// & wasbs://)
@@ -51,11 +52,8 @@ abstract class AzureStorageCloudCredential implements CloudCredential {
     }
 
     @Override
-    public void toThrift(List<TCloudProperty> properties) {
-        for (Map.Entry<String, String> entry : generatedConfigurationMap.entrySet()) {
-            TCloudProperty tCloudProperty = new TCloudProperty(entry.getKey(), entry.getValue());
-            properties.add(tCloudProperty);
-        }
+    public void toThrift(Map<String, String> properties) {
+        properties.putAll(generatedConfigurationMap);
     }
 
     abstract void tryGenerateConfigurationMap();
@@ -119,8 +117,16 @@ class AzureBlobCloudCredential extends AzureStorageCloudCredential {
 
     @Override
     public FileStoreInfo toFileStoreInfo() {
-        // TODO: Support azure credential
-        return null;
+        FileStoreInfo.Builder fileStore = FileStoreInfo.newBuilder();
+        fileStore.setFsType(FileStoreType.AZBLOB);
+        AzBlobFileStoreInfo.Builder azBlobFileStoreInfo = AzBlobFileStoreInfo.newBuilder();
+        azBlobFileStoreInfo.setEndpoint(endpoint);
+        AzBlobCredentialInfo.Builder azBlobCredentialInfo = AzBlobCredentialInfo.newBuilder();
+        azBlobCredentialInfo.setSharedKey(sharedKey);
+        azBlobCredentialInfo.setSasToken(sasToken);
+        azBlobFileStoreInfo.setCredential(azBlobCredentialInfo.build());
+        fileStore.setAzblobFsInfo(azBlobFileStoreInfo.build());
+        return fileStore.build();
     }
 }
 
