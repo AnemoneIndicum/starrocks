@@ -383,15 +383,19 @@ public class LocalMetastore implements ConnectorMetadata {
             } else {
                 id = getNextId();
                 Database db = new Database(id, dbName);
-                unprotectCreateDb(db);
                 String storageVolumeId = "";
-                if (RunMode.allowCreateLakeTable()) {
+                if (RunMode.getCurrentRunMode() == RunMode.SHARED_DATA) {
+                    // In shared data mode, storage volume needs to be bound to db before creating db.
                     String volume = StorageVolumeMgr.DEFAULT;
                     if (properties != null && properties.containsKey(PropertyAnalyzer.PROPERTIES_STORAGE_VOLUME)) {
                         volume = properties.remove(PropertyAnalyzer.PROPERTIES_STORAGE_VOLUME);
                     }
-                    storageVolumeId = bindStorageVolumeToDb(id, volume);
+                    storageVolumeId = getStorageVolumeId(volume);
+                    if (!GlobalStateMgr.getCurrentState().getStorageVolumeMgr().bindDbToStorageVolume(storageVolumeId, id)) {
+                        throw new DdlException(String.format("Storage volume with id %s not exists", storageVolumeId));
+                    }
                 }
+                unprotectCreateDb(db);
                 GlobalStateMgr.getCurrentState().getEditLog().logCreateDb(db, storageVolumeId);
             }
         } finally {
@@ -430,7 +434,7 @@ public class LocalMetastore implements ConnectorMetadata {
             Database db = new Database(createDbInfo.getId(), createDbInfo.getDbName());
             unprotectCreateDb(db);
             if (RunMode.getCurrentRunMode() == RunMode.SHARED_DATA) {
-                stateMgr.getStorageVolumeMgr().bindDbToStorageVolume(createDbInfo.getStorageVolumeId(), db.getId());
+                stateMgr.getStorageVolumeMgr().replayBindDbToStorageVolume(createDbInfo.getStorageVolumeId(), db.getId());
             }
             LOG.info("finish replay create db, name: {}, id: {}", db.getOriginName(), db.getId());
         } finally {
@@ -798,7 +802,14 @@ public class LocalMetastore implements ConnectorMetadata {
         String storageVolumeId = GlobalStateMgr.getCurrentState().getStorageVolumeMgr()
                 .getStorageVolumeIdOfTable(table.getId());
 
-        onCreate(db, table, storageVolumeId, stmt.isSetIfNotExists());
+        try {
+            onCreate(db, table, storageVolumeId, stmt.isSetIfNotExists());
+        } catch (DdlException e) {
+            if (RunMode.getCurrentRunMode() == RunMode.SHARED_DATA) {
+                GlobalStateMgr.getCurrentState().getStorageVolumeMgr().unbindTableToStorageVolume(table.getId());
+            }
+            throw e;
+        }
         return true;
     }
 
@@ -1986,6 +1997,7 @@ public class LocalMetastore implements ConnectorMetadata {
                                 "table already exists");
                     } else {
                         LOG.info("Create table[{}] which already exists", table.getName());
+                        return;
                     }
                 }
 
@@ -2049,7 +2061,7 @@ public class LocalMetastore implements ConnectorMetadata {
         if (RunMode.getCurrentRunMode() == RunMode.SHARED_DATA && table.isCloudNativeTable()) {
             String storageVolumeId = info.getStorageVolumeId();
             GlobalStateMgr.getCurrentState().getStorageVolumeMgr()
-                    .bindTableToStorageVolume(storageVolumeId, table.getId());
+                    .replayBindTableToStorageVolume(storageVolumeId, table.getId());
         }
     }
 
@@ -2658,6 +2670,10 @@ public class LocalMetastore implements ConnectorMetadata {
 
         // create partition info
         PartitionInfo partitionInfo = buildPartitionInfo(stmt);
+        if (partitionInfo instanceof ListPartitionInfo && ((ListPartitionInfo) partitionInfo).getPartitionColumns()
+                .stream().anyMatch(Column::isAllowNull)) {
+            throw new DdlException("List partition columns must not be nullable in Materialized view for now.");
+        }
         // create distribution info
         DistributionDesc distributionDesc = stmt.getDistributionDesc();
         Preconditions.checkNotNull(distributionDesc);
@@ -2761,25 +2777,7 @@ public class LocalMetastore implements ConnectorMetadata {
         if (properties == null) {
             properties = Maps.newHashMap();
         }
-        // set replication_num
-        short replicationNum = RunMode.defaultReplicationNum();
-        try {
-            if (properties.containsKey(PropertyAnalyzer.PROPERTIES_REPLICATION_NUM)) {
-                replicationNum = PropertyAnalyzer.analyzeReplicationNum(properties, replicationNum);
-                materializedView.setReplicationNum(replicationNum);
-            }
-            if (properties.containsKey(PropertyAnalyzer.PROPERTIES_MV_REWRITE_STALENESS_SECOND)) {
-                Integer maxMVRewriteStaleness = PropertyAnalyzer.analyzeMVRewriteStaleness(properties);
-                materializedView.setMaxMVRewriteStaleness(maxMVRewriteStaleness);
-            }
-        } catch (AnalysisException e) {
-            throw new DdlException(e.getMessage(), e);
-        }
-        // replicated storage
-        materializedView.setEnableReplicatedStorage(
-                PropertyAnalyzer.analyzeBooleanProp(
-                        properties, PropertyAnalyzer.PROPERTIES_REPLICATED_STORAGE,
-                        Config.enable_replicated_storage_as_default_engine));
+
         boolean isNonPartitioned = partitionInfo.getType() == PartitionType.UNPARTITIONED;
         DataProperty dataProperty = analyzeMVDataProperties(db, materializedView, properties, isNonPartitioned);
 
@@ -2789,7 +2787,7 @@ public class LocalMetastore implements ConnectorMetadata {
             long partitionId = GlobalStateMgr.getCurrentState().getNextId();
             Preconditions.checkNotNull(dataProperty);
             partitionInfo.setDataProperty(partitionId, dataProperty);
-            partitionInfo.setReplicationNum(partitionId, replicationNum);
+            partitionInfo.setReplicationNum(partitionId, materializedView.getDefaultReplicationNum());
             partitionInfo.setIsInMemory(partitionId, false);
             partitionInfo.setTabletType(partitionId, TTabletType.TABLET_TYPE_DISK);
             StorageInfo storageInfo = materializedView.getTableProperty().getStorageInfo();
@@ -2815,8 +2813,45 @@ public class LocalMetastore implements ConnectorMetadata {
                                                  MaterializedView materializedView,
                                                  Map<String, String> properties,
                                                  boolean isNonPartitioned) throws DdlException {
-        DataProperty dataProperty;
+        DataProperty dataProperty = null;
         try {
+            // replicated storage
+            materializedView.setEnableReplicatedStorage(
+                    PropertyAnalyzer.analyzeBooleanProp(
+                            properties, PropertyAnalyzer.PROPERTIES_REPLICATED_STORAGE,
+                            Config.enable_replicated_storage_as_default_engine));
+
+            // replication_num
+            short replicationNum = RunMode.defaultReplicationNum();
+            if (properties.containsKey(PropertyAnalyzer.PROPERTIES_REPLICATION_NUM)) {
+                replicationNum = PropertyAnalyzer.analyzeReplicationNum(properties, replicationNum);
+                materializedView.setReplicationNum(replicationNum);
+            }
+            if (properties.containsKey(PropertyAnalyzer.PROPERTIES_MV_REWRITE_STALENESS_SECOND)) {
+                Integer maxMVRewriteStaleness = PropertyAnalyzer.analyzeMVRewriteStaleness(properties);
+                materializedView.setMaxMVRewriteStaleness(maxMVRewriteStaleness);
+            }
+
+            // bucket number
+            // infer bucket number of materialized view based on base-table,
+            // currently is max{bucket_num of base_table}
+            // TODO: infer the bucket number according to MV pattern and cardinality
+            DistributionInfo distributionInfo = materializedView.getDefaultDistributionInfo();
+            if (distributionInfo.getBucketNum() == 0) {
+                int inferredBucketNum = 0;
+                for (BaseTableInfo base : materializedView.getBaseTableInfos()) {
+                    if (base.getTable().isNativeTableOrMaterializedView()) {
+                        OlapTable olapTable = (OlapTable) base.getTable();
+                        DistributionInfo dist = olapTable.getDefaultDistributionInfo();
+                        inferredBucketNum = Math.max(inferredBucketNum, dist.getBucketNum());
+                    }
+                }
+                if (inferredBucketNum == 0) {
+                    inferredBucketNum = CatalogUtils.calBucketNumAccordingToBackends();
+                }
+                distributionInfo.setBucketNum(inferredBucketNum);
+            }
+
             // set storage medium
             boolean hasMedium = properties.containsKey(PropertyAnalyzer.PROPERTIES_STORAGE_MEDIUM);
             dataProperty = PropertyAnalyzer.analyzeDataProperty(properties,
@@ -2937,7 +2972,7 @@ public class LocalMetastore implements ConnectorMetadata {
                 materializedView.getTableProperty().getProperties().putAll(properties);
             }
         } catch (AnalysisException e) {
-            throw new DdlException(e.getMessage(), e);
+            ErrorReport.reportSemanticException(ErrorCode.ERR_INVALID_PARAMETER, e.getMessage());
         }
         return dataProperty;
     }
@@ -2957,7 +2992,7 @@ public class LocalMetastore implements ConnectorMetadata {
                         Collections.singletonList(stmt.getPartitionColumn()),
                         Maps.newHashMap(), false);
         } else {
-            return  new SinglePartitionInfo();
+            return new SinglePartitionInfo();
         }
     }
 
@@ -4593,7 +4628,7 @@ public class LocalMetastore implements ConnectorMetadata {
         }
     }
 
-    private String bindStorageVolumeToDb(long dbId, String volume) throws DdlException {
+    private String getStorageVolumeId(String volume) throws DdlException {
         StorageVolumeMgr svm = GlobalStateMgr.getCurrentState().getStorageVolumeMgr();
         StorageVolume sv = null;
         if (volume.equals(StorageVolumeMgr.DEFAULT)) {
@@ -4604,9 +4639,7 @@ public class LocalMetastore implements ConnectorMetadata {
         if (sv == null) {
             throw new DdlException("Unknown storage volume \"" + volume + "\"");
         }
-        String storageVolumeId = sv.getId();
-        svm.bindDbToStorageVolume(storageVolumeId, dbId);
-        return storageVolumeId;
+        return sv.getId();
     }
 
     public void save(DataOutputStream dos) throws IOException, SRMetaBlockException {
