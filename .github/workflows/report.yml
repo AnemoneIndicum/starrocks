@@ -2,7 +2,7 @@ name: Report on the pull request
 
 on:
   workflow_run:
-    workflows: [ "CI PIPELINE 2" ]
+    workflows: [ "CI PIPELINE", "CI PIPELINE - BRANCH" ]
     types:
       - completed
 
@@ -19,7 +19,7 @@ permissions:
   repository-projects: write
   security-events: write
   statuses: write
-  
+
 jobs:
   INFO:
     runs-on: [ self-hosted, quick ]
@@ -27,7 +27,7 @@ jobs:
       github.event.workflow_run.event == 'pull_request'
     outputs:
       PR_NUMBER: ${{ steps.pr_details.outputs.PR_NUMBER }}
-      BASE_REF: ${{ steps.pr_details.outputs.base_ref }}
+      BASE_REF: ${{ steps.pr_details.outputs.BASE_REF }}
     steps:
       - name: Download workflow artifact
         uses: dawidd6/action-download-artifact@v2.11.0
@@ -39,7 +39,7 @@ jobs:
 
       - name: Read the pr_num file
         id: pr_num_reader
-        uses: juliangruber/read-file-action@v1.0.0
+        uses: juliangruber/read-file-action@v1
         with:
           path: ./pr_num.txt
 
@@ -52,7 +52,7 @@ jobs:
         run: |
           PR_NUMBER=`echo ${PR_NUMBER}`
           base_ref=`gh pr view ${PR_NUMBER} -R ${REPO} --json baseRefName -q .baseRefName`
-          echo "base_ref=${base_ref}" >> $GITHUB_OUTPUT 
+          echo "BASE_REF=${base_ref}" >> $GITHUB_OUTPUT 
           echo "PR_NUMBER=${PR_NUMBER}" >> $GITHUB_OUTPUT 
 
   FE-UT-REPORT:
@@ -95,6 +95,8 @@ jobs:
         with:
           check_name: 'FE UT Report'
           detailed_summary: true
+          fail_on_failure: true
+          commit: ${{ github.event.workflow_run.head_sha }}
           report_paths: ./fe-ut/*.xml
 
       # Incremental Coverage
@@ -124,12 +126,12 @@ jobs:
               exit 1
             fi
             timeout 180 java -jar cover-checker-console/target/cover-checker-console-1.4.0-jar-with-dependencies.jar \
-              --cover ${{ github.workspace }}/fe-result/ --github-token ${{ secrets.GITHUB_TOKEN }} \
+              --cover ${{ github.workspace }}/fe-result/ --github-token ${{ secrets.PAT }} \
               --repo ${{ github.repository }} --threshold 80 --github-url api.github.com --pr ${PR_NUMBER} -type jacoco
             pull_status=$?
             time_count=`expr $time_count + 1`
           done
-          
+
   SQL-Tester-REPORT:
     runs-on: [ self-hosted, quick ]
     needs: INFO
@@ -162,6 +164,7 @@ jobs:
           fi
 
       - name: Prepare Tools
+        id: prepare-tools
         if: steps.download-SQL-Tester-xml.outputs.size != '0'
         run: |
           mkdir -p .actions/nose-report-action
@@ -170,11 +173,13 @@ jobs:
 
       - name: Publish SQL-Tester Report
         uses: ./.actions/nose-report-action
+        if: steps.prepare-tools.outcome == 'success'
         with:
           check_name: 'SQL-Tester Report'
           fail_on_failure: true
           detailed_summary: true
           token: ${{ secrets.GITHUB_TOKEN }}
+          commit: ${{ github.event.workflow_run.head_sha }}
           report_paths: 'sql-tester-result/*.xml'
 
   Admit-REPORT:
@@ -210,6 +215,7 @@ jobs:
 
       - name: Prepare Tools
         if: steps.download-admit-xml.outputs.size != '0'
+        id: prepare-tools
         run: |
           mkdir -p .actions/nose-report-action
           cd .actions/nose-report-action
@@ -217,9 +223,11 @@ jobs:
 
       - name: Publish Admit Report
         uses: ./.actions/nose-report-action
+        if: steps.prepare-tools.outcome == 'success'
         with:
           check_name: 'Admit Report'
           fail_on_failure: true
           detailed_summary: true
+          commit: ${{ github.event.workflow_run.head_sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
           report_paths: 'admit-result/*.xml'
