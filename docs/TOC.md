@@ -52,7 +52,9 @@
   + [Load data from a local file system or a streaming data source using HTTP PUT](./loading/StreamLoad.md)
   + [Load data from HDFS or cloud storage](./loading/BrokerLoad.md)
   + [Continuously load data from Apache Kafka®](./loading/RoutineLoad.md)
-  + [Bulk load using Apache Spark™](./loading/SparkLoad.md)
+  + Load data using Apache Spark™
+    + [Load data using Spark Connector](./loading/Spark-connector-starrocks.md)
+    + [Load data in bulk using Spark Load](./loading/SparkLoad.md)
   + [Load data using INSERT](./loading/InsertInto.md)
   + [Load data using Stream Load transaction interface](./loading/Stream_Load_transaction_interface.md)
   + [Realtime synchronization from MySQL](./loading/Flink_cdc_load.md)
@@ -260,6 +262,7 @@
       + [SHOW BACKUP](./sql-reference/sql-statements/data-manipulation/SHOW%20BACKUP.md)
       + [SHOW CATALOGS](./sql-reference/sql-statements/data-manipulation/SHOW%20CATALOGS.md)
       + [SHOW CREATE CATALOG](./sql-reference/sql-statements/data-manipulation/SHOW%20CREATE%20CATALOG.md)
+      + [SHOW CREATE DATABASE](./sql-reference/sql-statements/data-manipulation/SHOW%20CREATE%20DATABASE.md)
       + [SHOW CREATE MATERIALIZED VIEW](./sql-reference/sql-statements/data-manipulation/SHOW%20CREATE%20MATERIALIZED%20VIEW.md)
       + [SHOW CREATE TABLE](./sql-reference/sql-statements/data-manipulation/SHOW%20CREATE%20TABLE.md)
       + [SHOW CREATE VIEW](./sql-reference/sql-statements/data-manipulation/SHOW%20CREATE%20VIEW.md)
@@ -315,6 +318,7 @@
         + [STRUCT](./sql-reference/sql-statements/data-types/STRUCT.md)
     + [Keywords](./sql-reference/sql-statements/keywords.md)
     + [AUTO_INCREMENT](./sql-reference/sql-statements/auto_increment.md)
+    + [Generated columns](./sql-reference/sql-statements/generated_columns.md)
   + Function Reference
     + [Java UDFs](./sql-reference/sql-functions/JAVA_UDF.md)
     + [Window functions](./sql-reference/sql-functions/Window_function.md)
@@ -637,6 +641,8 @@
       + [ucase](./sql-reference/sql-functions/string-functions/ucase.md)
       + [unhex](./sql-reference/sql-functions/string-functions/unhex.md)
       + [upper](./sql-reference/sql-functions/string-functions/upper.md)
+      + [url_decode](./sql-reference/sql-functions/string-functions/url_decode.md)
+      + [url_encode](./sql-reference/sql-functions/string-functions/url_encode.md)
     + Pattern Matching Functions
       + [like](./sql-reference/sql-functions/like_predicate-functions/like.md)
       + [regexp](./sql-reference/sql-functions/like_predicate-functions/regexp.md)
@@ -652,6 +658,8 @@
     + Struct Functions
       + [named_struct](./sql-reference/sql-functions/struct-functions/named_struct.md)
       + [row](./sql-reference/sql-functions/struct-functions/row.md)
+    + Table Functions
+      + [generate_series](./sql-reference/sql-functions/table-functions/generate_series.md)
     + Utility Functions
       + [current_role](./sql-reference/sql-functions/utility-functions/current_role.md)
       + [current_version](./sql-reference/sql-functions/utility-functions/current_version.md)
@@ -702,6 +710,7 @@
   + Trace Tools
     + [Trace](./developers/trace-tools/Trace.md)
 + Release Notes
+  + [v3.1](./release_notes/release-3.1.md)
   + [v3.0](./release_notes/release-3.0.md)
   + [v2.5](./release_notes/release-2.5.md)
   + [v2.4](./release_notes/release-2.4.md)

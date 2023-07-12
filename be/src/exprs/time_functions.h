@@ -573,6 +573,10 @@ public:
 
     static Status format_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
 
+    static Status jodatime_format_prepare(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+
+    static Status jodatime_format_close(FunctionContext* context, FunctionContext::FunctionStateScope scope);
+
     /**
      * Format TimestampValue.
      * @param context
@@ -590,6 +594,22 @@ public:
     DEFINE_VECTORIZED_FN(date_format);
     //    DEFINE_VECTORIZED_FN(month_name);
     //    DEFINE_VECTORIZED_FN(day_name);
+
+    /**
+     * Format TimestampValue using JodaTime’s date time format
+     * @param context
+     * @param columns [TimestampColumn, BinaryColumn of TYPE_VARCHAR] The first column holds the timestamp, the second column holds the format.
+     * @return  BinaryColumn of TYPE_VARCHAR.
+     */
+    DEFINE_VECTORIZED_FN(jodadatetime_format);
+
+    /**
+     * Format DateValue using JodaTime’s date time format
+     * @param context
+     * @param columns [DateColumn, BinaryColumn of TYPE_VARCHAR] The first column holds the date, the second column holds the format.
+     * @return  BinaryColumn of TYPE_VARCHAR.
+     */
+    DEFINE_VECTORIZED_FN(jodadate_format);
 
     /**
      * @param: [timestampstr, formatstr]
@@ -774,6 +794,13 @@ public:
         None
     };
 
+    struct FormatCtx {
+        bool is_valid = false;
+        std::string fmt;
+        int len;
+        FormatType fmt_type;
+    };
+
 private:
     struct FromUnixState {
         bool const_format{false};
@@ -787,13 +814,6 @@ private:
         bool is_valid = false;
         cctz::time_zone from_tz;
         cctz::time_zone to_tz;
-    };
-
-    struct FormatCtx {
-        bool is_valid = false;
-        std::string fmt;
-        int len;
-        FormatType fmt_type;
     };
 
     // fmt for string format like "%Y-%m-%d" and "%Y-%m-%d %H:%i:%s"
