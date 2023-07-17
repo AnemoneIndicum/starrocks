@@ -16,6 +16,7 @@ package com.starrocks.server;
 
 import com.google.gson.annotations.SerializedName;
 import com.staros.util.LockCloseable;
+import com.starrocks.common.InvalidConfException;
 import com.starrocks.persist.DropStorageVolumeLog;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
 import com.starrocks.persist.metablock.SRMetaBlockException;
@@ -47,9 +48,9 @@ public class SharedNothingStorageVolumeMgr extends StorageVolumeMgr {
     }
 
     @Override
-    public StorageVolume getStorageVolume(String storageVolumeId) {
+    public StorageVolume getStorageVolume(String svId) {
         try (LockCloseable lock = new LockCloseable(rwLock.readLock())) {
-            return idToSV.get(storageVolumeId);
+            return idToSV.get(svId);
         }
     }
 
@@ -116,7 +117,7 @@ public class SharedNothingStorageVolumeMgr extends StorageVolumeMgr {
     }
 
     @Override
-    public boolean bindDbToStorageVolume(String svKey, long dbId) {
+    public boolean bindDbToStorageVolume(String svName, long dbId) {
         return true;
     }
 
@@ -131,7 +132,7 @@ public class SharedNothingStorageVolumeMgr extends StorageVolumeMgr {
     }
 
     @Override
-    public boolean bindTableToStorageVolume(String svKey, long dbId, long tableId) {
+    public boolean bindTableToStorageVolume(String svName, long dbId, long tableId) {
         return true;
     }
 
@@ -146,7 +147,12 @@ public class SharedNothingStorageVolumeMgr extends StorageVolumeMgr {
     }
 
     @Override
-    public String createOrUpdateBuiltinStorageVolume() {
+    public String createBuiltinStorageVolume() {
         return "";
+    }
+
+    @Override
+    public void validateStorageVolumeConfig() throws InvalidConfException {
+
     }
 }
