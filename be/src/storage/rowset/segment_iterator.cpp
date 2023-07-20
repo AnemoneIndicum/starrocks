@@ -243,6 +243,8 @@ private:
 
     bool _skip_fill_data_cache() const { return !_opts.fill_data_cache; }
 
+    void _init_column_access_paths();
+
     // search delta column group by column uniqueid, if this column exist in delta column group,
     // then return column iterator and delta column's fillname.
     // Or just return null
@@ -314,6 +316,9 @@ private:
 
     bool _inited = false;
     bool _has_bitmap_index = false;
+
+    std::unordered_map<ColumnId, ColumnAccessPath*> _column_access_paths;
+    std::unordered_map<ColumnId, ColumnAccessPath*> _predicate_column_access_paths;
 };
 
 SegmentIterator::SegmentIterator(std::shared_ptr<Segment> segment, Schema schema, SegmentReadOptions options)
@@ -344,9 +349,18 @@ SegmentIterator::SegmentIterator(std::shared_ptr<Segment> segment, Schema schema
                 }
             }
         }
-        if (_opts.dcg_loader != nullptr) {
-            SCOPED_RAW_TIMER(&_opts.stats->get_delta_column_group_ns);
+    }
+    if (_opts.dcg_loader != nullptr) {
+        SCOPED_RAW_TIMER(&_opts.stats->get_delta_column_group_ns);
+        if (_opts.is_primary_keys) {
+            TabletSegmentId tsid;
+            tsid.tablet_id = _opts.tablet_id;
+            tsid.segment_id = _opts.rowset_id + segment_id();
             _get_dcg_st = _opts.dcg_loader->load(tsid, _opts.version, &_dcgs);
+        } else {
+            int64_t tablet_id = _opts.tablet_id;
+            RowsetId rowsetid = _opts.rowsetid;
+            _get_dcg_st = _opts.dcg_loader->load(tablet_id, rowsetid, segment_id(), INT64_MAX, &_dcgs);
         }
     }
 }
@@ -384,6 +398,7 @@ Status SegmentIterator::_init() {
     // init stage
     // The main task is to do some initialization,
     // initialize the iterator and check if certain optimizations can be applied
+    _init_column_access_paths();
     RETURN_IF_ERROR(_check_low_cardinality_optimization());
     RETURN_IF_ERROR(_init_column_iterators<true>(_schema));
     // filter by index stage
@@ -428,15 +443,16 @@ Status SegmentIterator::_try_to_update_ranges_by_runtime_filter() {
 StatusOr<std::shared_ptr<Segment>> SegmentIterator::_get_dcg_segment(uint32_t ucid, int32_t* col_index) {
     // iterate dcg from new ver to old ver
     for (const auto& dcg : _dcgs) {
-        int32_t idx = dcg->get_column_idx(ucid);
-        if (idx >= 0) {
-            std::string column_file = dcg->column_file(parent_name(_segment->file_name()));
+        // cols file index -> column index in corresponding file
+        std::pair<int32_t, int32_t> idx = dcg->get_column_idx(ucid);
+        if (idx.first >= 0) {
+            auto column_file = dcg->column_files(parent_name(_segment->file_name()))[idx.first];
             if (_dcg_segments.count(column_file) == 0) {
-                ASSIGN_OR_RETURN(auto dcg_segment, _segment->new_dcg_segment(*dcg));
+                ASSIGN_OR_RETURN(auto dcg_segment, _segment->new_dcg_segment(*dcg, idx.first));
                 _dcg_segments[column_file] = dcg_segment;
             }
             if (col_index != nullptr) {
-                *col_index = idx;
+                *col_index = idx.second;
             }
             return _dcg_segments[column_file];
         }
@@ -460,6 +476,22 @@ StatusOr<std::unique_ptr<ColumnIterator>> SegmentIterator::_new_dcg_column_itera
     return nullptr;
 }
 
+void SegmentIterator::_init_column_access_paths() {
+    if (_opts.column_access_paths == nullptr || _opts.column_access_paths->empty()) {
+        return;
+    }
+
+    for (auto& column_access_path : *_opts.column_access_paths) {
+        auto* path = column_access_path.get();
+
+        if (path->is_from_predicate()) {
+            _predicate_column_access_paths[path->index()] = path;
+        } else {
+            _column_access_paths[path->index()] = path;
+        }
+    }
+}
+
 Status SegmentIterator::_init_column_iterator_by_cid(const ColumnId cid, const ColumnUID ucid, bool check_dict_enc) {
     ColumnIteratorOptions iter_opts;
     iter_opts.stats = _opts.stats;
@@ -471,10 +503,8 @@ Status SegmentIterator::_init_column_iterator_by_cid(const ColumnId cid, const C
     RandomAccessFileOptions opts{.skip_fill_local_cache = _skip_fill_data_cache()};
 
     ColumnAccessPath* access_path = nullptr;
-    if (_opts.column_access_paths != nullptr && !_opts.column_access_paths->empty()) {
-        if (_opts.column_access_paths->find(cid) != _opts.column_access_paths->end()) {
-            access_path = (*_opts.column_access_paths)[cid].get();
-        }
+    if (_column_access_paths.find(cid) != _column_access_paths.end()) {
+        access_path = _column_access_paths[cid];
     }
 
     std::string dcg_filename;

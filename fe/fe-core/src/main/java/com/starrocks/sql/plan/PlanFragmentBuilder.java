@@ -36,6 +36,7 @@ import com.starrocks.analysis.TupleId;
 import com.starrocks.catalog.AggregateFunction;
 import com.starrocks.catalog.ColocateTableIndex;
 import com.starrocks.catalog.Column;
+import com.starrocks.catalog.ColumnAccessPath;
 import com.starrocks.catalog.Function;
 import com.starrocks.catalog.FunctionSet;
 import com.starrocks.catalog.JDBCTable;
@@ -174,6 +175,8 @@ import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamAggOperator;
 import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamJoinOperator;
 import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamScanOperator;
 import com.starrocks.sql.optimizer.rule.tree.AddDecodeNodeForDictStringRule.DecodeVisitor;
+import com.starrocks.sql.optimizer.rule.tree.prunesubfield.SubfieldAccessPathNormalizer;
+import com.starrocks.sql.optimizer.rule.tree.prunesubfield.SubfieldExpressionCollector;
 import com.starrocks.sql.optimizer.statistics.Statistics;
 import com.starrocks.sql.optimizer.transformer.LogicalPlan;
 import com.starrocks.thrift.TBrokerFileStatus;
@@ -386,11 +389,16 @@ public class PlanFragmentBuilder {
             PlanFragment fragment = optExpression.getOp().accept(this, optExpression, context);
             Projection projection = (optExpression.getOp()).getProjection();
 
-            if (projection == null) {
-                return fragment;
-            } else {
-                return buildProjectNode(optExpression, projection, fragment, context);
+            if (projection != null) {
+                fragment = buildProjectNode(optExpression, projection, fragment, context);
             }
+            PlanNode planRoot = fragment.getPlanRoot();
+            if (!(optExpression.getOp() instanceof PhysicalProjectOperator) && planRoot instanceof ProjectNode) {
+                // This projectNode comes from another node's projection field
+                planRoot = planRoot.getChild(0);
+            }
+            context.recordPlanNodeId2OptExpression(planRoot.getId().asInt(), optExpression);
+            return fragment;
         }
 
         private void setUnUsedOutputColumns(PhysicalOlapScanOperator node, OlapScanNode scanNode,
@@ -647,6 +655,36 @@ public class PlanFragmentBuilder {
             return inputFragment;
         }
 
+        // get all column access path, and mark paths which one is predicate used
+        private List<ColumnAccessPath> computeAllColumnAccessPath(PhysicalScanOperator scan) {
+            if (scan.getPredicate() == null) {
+                return scan.getColumnAccessPaths();
+            }
+
+            SubfieldExpressionCollector collector = new SubfieldExpressionCollector();
+            scan.getPredicate().accept(collector, null);
+
+            List<ColumnAccessPath> paths = Lists.newArrayList();
+            SubfieldAccessPathNormalizer normalizer = new SubfieldAccessPathNormalizer();
+            collector.getComplexExpressions().forEach(normalizer::add);
+
+            for (ColumnRefOperator key : scan.getColRefToColumnMetaMap().keySet()) {
+                if (!key.getType().isComplexType()) {
+                    continue;
+                }
+
+                String name = scan.getColRefToColumnMetaMap().get(key).getName();
+                ColumnAccessPath path = normalizer.normalizePath(key, name);
+                if (path.onlyRoot()) {
+                    continue;
+                }
+                path.setFromPredicate(true);
+                paths.add(path);
+            }
+            paths.addAll(scan.getColumnAccessPaths());
+            return paths;
+        }
+
         @Override
         public PlanFragment visitPhysicalOlapScan(OptExpression optExpr, ExecPlan context) {
             PhysicalOlapScanOperator node = (PhysicalOlapScanOperator) optExpr.getOp();
@@ -659,6 +697,8 @@ public class PlanFragmentBuilder {
             OlapScanNode scanNode = new OlapScanNode(context.getNextNodeId(), tupleDescriptor, "OlapScanNode");
             scanNode.setLimit(node.getLimit());
             scanNode.computeStatistics(optExpr.getStatistics());
+            scanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            scanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
 
             // set tablet
             try {
@@ -718,7 +758,7 @@ public class PlanFragmentBuilder {
             }
 
             // set column access path
-            scanNode.setColumnAccessPaths(node.getColumnAccessPaths());
+            scanNode.setColumnAccessPaths(computeAllColumnAccessPath(node));
 
             // set predicate
             List<ScalarOperator> predicates = Utils.extractConjuncts(node.getPredicate());
@@ -872,6 +912,8 @@ public class PlanFragmentBuilder {
             HudiScanNode hudiScanNode =
                     new HudiScanNode(context.getNextNodeId(), tupleDescriptor, "HudiScanNode");
             hudiScanNode.computeStatistics(optExpression.getStatistics());
+            hudiScanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            hudiScanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
             try {
                 HDFSScanNodePredicates scanNodePredicates = hudiScanNode.getScanNodePredicates();
                 scanNodePredicates.setSelectedPartitionIds(predicates.getSelectedPartitionIds());
@@ -913,6 +955,8 @@ public class PlanFragmentBuilder {
 
             HdfsScanNode hdfsScanNode =
                     new HdfsScanNode(context.getNextNodeId(), tupleDescriptor, "HdfsScanNode");
+            hdfsScanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            hdfsScanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
             hdfsScanNode.computeStatistics(optExpression.getStatistics());
             try {
                 HDFSScanNodePredicates scanNodePredicates = hdfsScanNode.getScanNodePredicates();
@@ -953,6 +997,8 @@ public class PlanFragmentBuilder {
 
             FileTableScanNode fileTableScanNode =
                     new FileTableScanNode(context.getNextNodeId(), tupleDescriptor, "FileTableScanNode");
+            fileTableScanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            fileTableScanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
             fileTableScanNode.computeStatistics(optExpression.getStatistics());
             try {
                 HDFSScanNodePredicates scanNodePredicates = fileTableScanNode.getScanNodePredicates();
@@ -999,6 +1045,8 @@ public class PlanFragmentBuilder {
             DeltaLakeScanNode deltaLakeScanNode =
                     new DeltaLakeScanNode(context.getNextNodeId(), tupleDescriptor, "DeltaLakeScanNode");
             deltaLakeScanNode.computeStatistics(optExpression.getStatistics());
+            deltaLakeScanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            deltaLakeScanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
             try {
                 // set predicate
                 ScalarOperatorToExpr.FormatterContext formatterContext =
@@ -1041,6 +1089,8 @@ public class PlanFragmentBuilder {
             PaimonScanNode paimonScanNode =
                     new PaimonScanNode(context.getNextNodeId(), tupleDescriptor, "PaimonScanNode");
             paimonScanNode.computeStatistics(optExpression.getStatistics());
+            paimonScanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            paimonScanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
             try {
                 // set predicate
                 ScalarOperatorToExpr.FormatterContext formatterContext =
@@ -1085,6 +1135,8 @@ public class PlanFragmentBuilder {
             IcebergScanNode icebergScanNode =
                     new IcebergScanNode(context.getNextNodeId(), tupleDescriptor, "IcebergScanNode");
             icebergScanNode.computeStatistics(optExpression.getStatistics());
+            icebergScanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            icebergScanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
             try {
                 // set predicate
                 ScalarOperatorToExpr.FormatterContext formatterContext =
@@ -1144,6 +1196,8 @@ public class PlanFragmentBuilder {
             scanNode.setUser(context.getConnectContext().getQualifiedUser());
             scanNode.setUserIp(context.getConnectContext().getRemoteIP());
             scanNode.setLimit(node.getLimit());
+            scanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            scanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
 
             // set predicate
             List<ScalarOperator> predicates = Utils.extractConjuncts(node.getPredicate());
@@ -1301,6 +1355,8 @@ public class PlanFragmentBuilder {
             scanNode.setLimit(node.getLimit());
             scanNode.computeColumnsAndFilters();
             scanNode.computeStatistics(optExpression.getStatistics());
+            scanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            scanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
 
             context.getScanNodes().add(scanNode);
             PlanFragment fragment =
@@ -1338,6 +1394,8 @@ public class PlanFragmentBuilder {
             }
             scanNode.setLimit(node.getLimit());
             scanNode.computeStatistics(optExpression.getStatistics());
+            scanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            scanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
             try {
                 scanNode.assignBackends();
             } catch (UserException e) {
@@ -1384,7 +1442,8 @@ public class PlanFragmentBuilder {
             scanNode.setLimit(node.getLimit());
             scanNode.computeColumnsAndFilters();
             scanNode.computeStatistics(optExpression.getStatistics());
-
+            scanNode.setCanUseAnyColumn(node.getCanUseAnyColumn());
+            scanNode.setCanUseMinMaxCountOpt(node.getCanUseMinMaxCountOpt());
             context.getScanNodes().add(scanNode);
             PlanFragment fragment =
                     new PlanFragment(context.getNextFragmentId(), scanNode, DataPartition.UNPARTITIONED);
@@ -1673,7 +1732,7 @@ public class PlanFragmentBuilder {
                 aggregationNode =
                         new AggregationNode(context.getNextNodeId(), inputFragment.getPlanRoot(), aggInfo);
                 aggregationNode.unsetNeedsFinalize();
-                aggregationNode.setIsPreagg(node.isUseStreamingPreAgg());
+                aggregationNode.setIsPreagg(node.canUseStreamingPreAgg());
                 aggregationNode.setIntermediateTuple();
                 if (!partitionExpressions.isEmpty()) {
                     inputFragment.setOutputPartition(DataPartition.hashPartitioned(partitionExpressions));
@@ -1761,15 +1820,14 @@ public class PlanFragmentBuilder {
                 aggregationNode =
                         new AggregationNode(context.getNextNodeId(), inputFragment.getPlanRoot(), aggInfo);
                 aggregationNode.unsetNeedsFinalize();
-                aggregationNode.setIsPreagg(node.isUseStreamingPreAgg());
+                aggregationNode.setIsPreagg(node.canUseStreamingPreAgg());
                 aggregationNode.setIntermediateTuple();
             } else {
                 throw unsupportedException("Not support aggregate type : " + node.getType());
             }
 
             aggregationNode.setUseSortAgg(node.isUseSortAgg());
-            aggregationNode.setStreamingPreaggregationMode(context.getConnectContext().
-                    getSessionVariable().getStreamingPreaggregationMode());
+            aggregationNode.setStreamingPreaggregationMode(node.getNeededPreaggregationMode());
             aggregationNode.setHasNullableGenerateChild();
             aggregationNode.computeStatistics(optExpr.getStatistics());
 

@@ -74,6 +74,7 @@ ADMIN SET FRONTEND CONFIG ("key" = "value");
 | max_partitions_in_one_batch              | -    | 4096         | The maximum number of partitions that can be created when you bulk create partitions. |
 | max_query_retry_time                     | -    | 2            | The maximum number of query retries on an FE.                |
 | max_create_table_timeout_second          | s    | 600          | The maximum timeout duration for creating a table, in seconds. |
+| create_table_max_serial_replicas         | -    | 128          | The maximum number of replicas to create serially. If actual replica count exceeds this, replicas will be created concurrently. Try to reduce this config if table creation is taking a long time to complete. |
 | max_running_rollup_job_num_per_table     | -    | 1            | The maximum number of rollup jobs can run in parallel for a table. |
 | max_planner_scalar_rewrite_num           | -    | 100000       | The maximum number of times that the optimizer can rewrite a scalar operator. |
 | enable_statistic_collect                 | -    | TRUE         | Whether to collect statistics for the CBO. This feature is enabled by default. |
@@ -127,6 +128,7 @@ ADMIN SET FRONTEND CONFIG ("key" = "value");
 | insert_load_default_timeout_second      | s    | 3600                                            | The timeout duration for the INSERT INTO statement that is used to load data, in seconds. |
 | broker_load_default_timeout_second      | s    | 14400                                           | The timeout duration for a Broker Load job, in seconds.      |
 | min_bytes_per_broker_scanner            | Byte | 67108864                                        | The minimum allowed amount of data that can be processed by a Broker Load instance, in bytes. |
+| max_broker_concurrency                  | -    | 100                                             | The maximum number of concurrent instances for a Broker Load task. This parameter is deprecated from v3.1 onwards. |
 | export_max_bytes_per_be_per_task        | Byte | 268435456                                       | The maximum amount of data that can be exported from a single BE by a single data unload task, in bytes. |
 | export_running_job_num_limit            | -    | 5                                               | The maximum number of data exporting tasks that can run in parallel. |
 | export_task_default_timeout_second      | s    | 7200                                            | The timeout duration for a data exporting task, in seconds.  |
@@ -396,7 +398,8 @@ BE dynamic parameters are as follows.
 | tablet_meta_checkpoint_min_new_rowsets_num | 10 | N/A | The minimum number of rowsets to create since the last TabletMeta Checkpoint. |
 | tablet_meta_checkpoint_min_interval_secs | 600 | Second | The time interval of thread polling for a TabletMeta Checkpoint. |
 | max_runnings_transactions_per_txn_map | 100 | N/A | The maximum number of transactions that can run concurrently in each partition. |
-| tablet_max_pending_versions | 1000 | N/A | The maximum number of pending versions that are tolerable in a Primary Key table. Pending versions refer to versions that are committed but not applied yet. |
+| tablet_max_pending_versions | 1000 | N/A | The maximum number of pending versions that are tolerable on a Primary Key tablet. Pending versions refer to versions that are committed but not applied yet. |
+| tablet_max_versions | 1000 | N/A | The maximum number of versions allowed on a tablet. If the number of versions exceeds this value, new write requests will fail. |
 | max_hdfs_file_handle | 1000 | N/A | The maximum number of HDFS file descriptors that can be opened. |
 | be_exit_after_disk_write_hang_second | 60 | second | The length of time that the BE waits to exit after the disk hangs. |
 | min_cumulative_compaction_failure_interval_sec | 30 | second | The minimum time interval at which Cumulative Compaction retries upon failures. |

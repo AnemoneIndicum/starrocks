@@ -317,6 +317,7 @@ public class SelectStmtTest {
                 "  |  group by: 3: expr\n" +
                 "  |  \n" +
                 "  4:AGGREGATE (update serialize)\n" +
+                "  |  STREAMING\n" +
                 "  |  output: count(2: split)\n" +
                 "  |  group by: 3: expr\n" +
                 "  |  \n" +
@@ -433,12 +434,12 @@ public class SelectStmtTest {
                                 "  |----17:EXCHANGE"
                 },
                 {"select count(distinct k1, k2), count(distinct k3) from db1.tbl1 group by k4 limit 1",
-                    "18:Project\n" +
+                    "14:Project\n" +
                             "  |  <slot 5> : 5: count\n" +
                             "  |  <slot 6> : 6: count\n" +
                             "  |  limit: 1\n" +
                             "  |  \n" +
-                            "  17:HASH JOIN\n" +
+                            "  13:HASH JOIN\n" +
                             "  |  join op: INNER JOIN (BUCKET_SHUFFLE(S))\n" +
                             "  |  colocate: false, reason: \n" +
                             "  |  equal join conjunct: 9: k4 <=> 11: k4\n" +
@@ -446,12 +447,12 @@ public class SelectStmtTest {
                 },
                 {"select * from (select count(distinct k1, k2), count(distinct k3) from db1.tbl1 group by k4, k3) t1" +
                         " limit 1",
-                       "16:Project\n" +
+                       "14:Project\n" +
                                "  |  <slot 5> : 5: count\n" +
                                "  |  <slot 6> : 6: count\n" +
                                "  |  limit: 1\n" +
                                "  |  \n" +
-                               "  15:HASH JOIN\n" +
+                               "  13:HASH JOIN\n" +
                                "  |  join op: INNER JOIN (BUCKET_SHUFFLE(S))\n" +
                                "  |  colocate: false, reason: \n" +
                                "  |  equal join conjunct: 10: k4 <=> 12: k4\n" +
@@ -460,12 +461,12 @@ public class SelectStmtTest {
                 },
                 {"with t1 as (select count(distinct k1, k2) as a, count(distinct k3) as b from db1.tbl1 " +
                         "group by k2, k3, k4) select * from t1 limit 1",
-                        "16:Project\n" +
+                        "14:Project\n" +
                                 "  |  <slot 11> : 11: count\n" +
                                 "  |  <slot 12> : 12: count\n" +
                                 "  |  limit: 1\n" +
                                 "  |  \n" +
-                                "  15:HASH JOIN\n" +
+                                "  13:HASH JOIN\n" +
                                 "  |  join op: INNER JOIN (BUCKET_SHUFFLE(S))\n" +
                                 "  |  colocate: false, reason: \n" +
                                 "  |  equal join conjunct: 14: k2 <=> 17: k2\n" +
@@ -522,7 +523,7 @@ public class SelectStmtTest {
                     "  RESULT SINK\n" +
                     "\n" +
                     "  1:AGGREGATE (update finalize)\n" +
-                    "  |  aggregate: sum[(1 / 2.12); args: DECIMAL128; result: DECIMAL128(38,6);" +
+                    "  |  aggregate: sum[(1 / 2.1200); args: DECIMAL128; result: DECIMAL128(38,6);" +
                     " args nullable: true; result nullable: true]\n" +
                     "  |  group by: [1: c0, VARCHAR, false]\n" +
                     "  |  cardinality: 1"));
@@ -549,6 +550,20 @@ public class SelectStmtTest {
                     "  |  4 <-> cast([3: c2, DECIMAL128(24,2), false] as DECIMAL128(38,19)) / 1 + " +
                     "[2: c1, DECIMAL128(24,5), false]\n" +
                     "  |  cardinality: 1"));
+        }
+    }
+
+    @Test
+    void testArraySubfieldsPrune() {
+        try {
+            String sql = "select str_to_map('age=18&sex=1&gender=1','&','=')['age'] AS age, " +
+                    "str_to_map('age=18&sex=1&gender=1','&','=')['sex'] AS sex;";
+            String plan = UtFrameUtils.getVerboseFragmentPlan(starRocksAssert.getCtx(), sql);
+            Assert.assertTrue(plan, plan.contains("str_to_map[([4: split, ARRAY<VARCHAR>, true], '='); " +
+                    "args: INVALID_TYPE,VARCHAR; result: MAP<VARCHAR,VARCHAR>; " +
+                    "args nullable: true; result nullable: true]"));
+        } catch (Exception e) {
+            Assert.fail("Should not throw an exception");
         }
     }
 }

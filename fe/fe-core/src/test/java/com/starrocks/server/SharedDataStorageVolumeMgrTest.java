@@ -19,6 +19,7 @@ import com.starrocks.common.AlreadyExistsException;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.InvalidConfException;
+import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.common.jmockit.Deencapsulation;
 import com.starrocks.credential.CloudConfiguration;
 import com.starrocks.credential.aws.AWSCloudConfiguration;
@@ -76,7 +77,9 @@ public class SharedDataStorageVolumeMgrTest {
             private long id = 1;
             @Mock
             public String addFileStore(FileStoreInfo fsInfo) {
-                fsInfo = fsInfo.toBuilder().setFsKey(String.valueOf(id++)).build();
+                if (fsInfo.getFsKey().isEmpty()) {
+                    fsInfo = fsInfo.toBuilder().setFsKey(String.valueOf(id++)).build();
+                }
                 fileStores.put(fsInfo.getFsKey(), fsInfo);
                 return fsInfo.getFsKey();
             }
@@ -131,7 +134,7 @@ public class SharedDataStorageVolumeMgrTest {
     }
 
     @Test
-    public void testStorageVolumeCRUD() throws AlreadyExistsException, DdlException {
+    public void testStorageVolumeCRUD() throws AlreadyExistsException, DdlException, MetaNotFoundException {
         new Expectations() {
             {
                 editLog.logSetDefaultStorageVolume((SetDefaultStorageVolumeLog) any);
@@ -215,12 +218,9 @@ public class SharedDataStorageVolumeMgrTest {
         } catch (IllegalStateException e) {
             Assert.assertTrue(e.getMessage().contains("default storage volume can not be removed"));
         }
-        try {
-            svm.removeStorageVolume(svName1);
-            Assert.fail();
-        } catch (IllegalStateException e) {
-            Assert.assertTrue(e.getMessage().contains("Storage volume 'test1' does not exist"));
-        }
+
+        ex = Assert.assertThrows(MetaNotFoundException.class, () -> svm.removeStorageVolume(svName1));
+        Assert.assertEquals("Storage volume 'test1' does not exist", ex.getMessage());
 
         svm.createStorageVolume(svName1, "S3", locations, storageParams, Optional.of(false), "");
         svm.updateStorageVolume(svName1, storageParams, Optional.of(true), "test update");
@@ -232,7 +232,7 @@ public class SharedDataStorageVolumeMgrTest {
     }
 
     @Test
-    public void testBindAndUnbind() throws DdlException, AlreadyExistsException {
+    public void testBindAndUnbind() throws DdlException, AlreadyExistsException, MetaNotFoundException {
         String svName = "test";
         StorageVolumeMgr svm = new SharedDataStorageVolumeMgr();
         List<String> locations = Arrays.asList("s3://abc");
@@ -292,7 +292,7 @@ public class SharedDataStorageVolumeMgrTest {
     }
 
     @Test
-    public void testCreateBuiltinStorageVolume() throws DdlException, AlreadyExistsException {
+    public void testCreateBuiltinStorageVolume() throws DdlException, AlreadyExistsException, MetaNotFoundException {
         new Expectations() {
             {
                 editLog.logSetDefaultStorageVolume((SetDefaultStorageVolumeLog) any);
@@ -308,6 +308,8 @@ public class SharedDataStorageVolumeMgrTest {
 
         Config.enable_load_volume_from_conf = true;
         String id = sdsvm.createBuiltinStorageVolume();
+        String[] bucketAndPrefix = Deencapsulation.invoke(sdsvm, "getBucketAndPrefix");
+        Assert.assertEquals(bucketAndPrefix[0], id);
         Assert.assertTrue(sdsvm.exists(StorageVolumeMgr.BUILTIN_STORAGE_VOLUME));
         StorageVolume sv = sdsvm.getStorageVolumeByName(StorageVolumeMgr.BUILTIN_STORAGE_VOLUME);
         Assert.assertEquals(id, sdsvm.getDefaultStorageVolumeId());
@@ -355,7 +357,8 @@ public class SharedDataStorageVolumeMgrTest {
         Config.cloud_native_storage_type = "hdfs";
         Config.cloud_native_hdfs_url = "hdfs://url";
         sdsvm.removeStorageVolume(StorageVolumeMgr.BUILTIN_STORAGE_VOLUME);
-        sdsvm.createBuiltinStorageVolume();
+        id = sdsvm.createBuiltinStorageVolume();
+        Assert.assertEquals(Config.cloud_native_hdfs_url, id);
         sv = sdsvm.getStorageVolumeByName(StorageVolumeMgr.BUILTIN_STORAGE_VOLUME);
         Assert.assertTrue(sv.getCloudConfiguration().toFileStoreInfo().hasHdfsFsInfo());
 
