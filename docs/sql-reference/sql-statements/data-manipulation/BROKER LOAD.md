@@ -567,9 +567,9 @@ The following parameters are supported:
 
   Suppose that you want to load a 1-GB data file on which two materialized views are created into a StarRocks cluster whose average load speed is 10 MB/s. The amount of time required for the data load is approximately 102 seconds.
 
-  (1 x 1024 x 3)/10 = 370.2 (second)
+  (1 x 1024 x 3)/10 = 307.2 (second)
 
-  For this example, we recommend that you set the timeout period to a value greater than 371 seconds.
+  For this example, we recommend that you set the timeout period to a value greater than 308 seconds.
 
 - `max_filter_ratio`
 
@@ -588,6 +588,14 @@ The following parameters are supported:
   `max_filter_ratio` = [`dpp.abnorm.ALL`/(`dpp.abnorm.ALL` + `dpp.norm.ALL`)]
 
   The sum of the values returned for `dpp.abnorm.ALL` and `dpp.norm.ALL` is the total number of rows to be loaded.
+
+- `log_rejected_record_num`
+
+  Specifies the maximum number of unqualified data rows that can be logged. This parameter is supported from v3.1 onwards. Valid values: `0`, `-1`, and any non-zero positive integer. Default value: `0`.
+  
+  - The value `0` specifies that no data rows that are filtered out will be logged.
+  - The value `-1` specifies that all data rows that are filtered out will be logged.
+  - A non-zero positive integer such as `n` specifies that up to `n` data rows that are filtered out can be logged on each BE.
 
 - `load_mem_limit`
 

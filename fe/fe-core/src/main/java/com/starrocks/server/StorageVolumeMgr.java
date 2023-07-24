@@ -24,7 +24,6 @@ import com.starrocks.common.MetaNotFoundException;
 import com.starrocks.credential.CloudConfigurationConstants;
 import com.starrocks.persist.DropStorageVolumeLog;
 import com.starrocks.persist.SetDefaultStorageVolumeLog;
-import com.starrocks.persist.gson.GsonPostProcessable;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
 import com.starrocks.persist.metablock.SRMetaBlockException;
 import com.starrocks.persist.metablock.SRMetaBlockID;
@@ -48,7 +47,7 @@ import java.util.Set;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-public abstract class StorageVolumeMgr implements GsonPostProcessable {
+public abstract class StorageVolumeMgr {
     private static final String ENABLED = "enabled";
 
     public static final String DEFAULT = "default";
@@ -121,11 +120,14 @@ public abstract class StorageVolumeMgr implements GsonPostProcessable {
             }
             Preconditions.checkState(!defaultStorageVolumeId.equals(sv.getId()),
                     "default storage volume can not be removed");
-            Set<Long> dbs = storageVolumeToDbs.get(sv.getId());
-            Set<Long> tables = storageVolumeToTables.get(sv.getId());
-            Preconditions.checkState(dbs == null && tables == null,
+            Set<Long> dbs = storageVolumeToDbs.getOrDefault(sv.getId(), new HashSet<>());
+            Set<Long> tables = storageVolumeToTables.getOrDefault(sv.getId(), new HashSet<>());
+            if (name.equals(BUILTIN_STORAGE_VOLUME)) {
+                tables.addAll(getTableBindingsOfBuiltinStorageVolume());
+            }
+            Preconditions.checkState(dbs.isEmpty() && tables.isEmpty(),
                     "Storage volume '%s' is referenced by dbs or tables, dbs: %s, tables: %s",
-                    name, dbs != null ? dbs.toString() : "[]", tables != null ? tables.toString() : "[]");
+                    name, dbs.toString(), tables.toString());
             removeInternalNoLock(sv);
         }
     }
@@ -264,16 +266,12 @@ public abstract class StorageVolumeMgr implements GsonPostProcessable {
         this.storageVolumeToDbs = data.storageVolumeToDbs;
         this.storageVolumeToTables = data.storageVolumeToTables;
         this.defaultStorageVolumeId = data.defaultStorageVolumeId;
-    }
 
-    @Override
-    public void gsonPostProcess() throws IOException {
         for (Map.Entry<String, Set<Long>> entry : storageVolumeToDbs.entrySet()) {
             for (Long dbId : entry.getValue()) {
                 dbToStorageVolume.put(dbId, entry.getKey());
             }
         }
-
         for (Map.Entry<String, Set<Long>> entry : storageVolumeToTables.entrySet()) {
             for (Long tableId : entry.getValue()) {
                 tableToStorageVolume.put(tableId, entry.getKey());
@@ -310,4 +308,6 @@ public abstract class StorageVolumeMgr implements GsonPostProcessable {
     public abstract String createBuiltinStorageVolume() throws DdlException, AlreadyExistsException;
 
     public abstract void validateStorageVolumeConfig() throws InvalidConfException;
+
+    protected abstract Set<Long> getTableBindingsOfBuiltinStorageVolume();
 }

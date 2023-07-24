@@ -65,6 +65,7 @@
 #include "storage/options.h"
 #include "storage/storage_engine.h"
 #include "util/debug_util.h"
+#include "util/failpoint/fail_point.h"
 #include "util/logging.h"
 #include "util/thrift_rpc_helper.h"
 #include "util/thrift_server.h"
@@ -179,6 +180,13 @@ int main(int argc, char** argv) {
         return -1;
     }
 
+#ifdef FIU_ENABLE
+    if (!starrocks::failpoint::init_failpoint_from_conf(std::string(getenv("STARROCKS_HOME")) +
+                                                        "/conf/failpoint.json")) {
+        fprintf(stderr, "fail to init failpoint from json file. ignore it...");
+    }
+#endif
+
 #if defined(ENABLE_STATUS_FAILED)
     // read range of source code for inject errors.
     starrocks::Status::access_directory_of_inject();
@@ -249,15 +257,17 @@ int main(int argc, char** argv) {
         exit(-1);
     }
 
+    auto* global_env = starrocks::GlobalEnv::GetInstance();
+    EXIT_IF_ERROR(global_env->init());
+
     auto* exec_env = starrocks::ExecEnv::GetInstance();
-    EXIT_IF_ERROR(exec_env->init_mem_tracker());
 
     // Init and open storage engine.
     starrocks::EngineOptions options;
     options.store_paths = paths;
     options.backend_uid = starrocks::UniqueId::gen_uid();
-    options.compaction_mem_tracker = exec_env->compaction_mem_tracker();
-    options.update_mem_tracker = exec_env->update_mem_tracker();
+    options.compaction_mem_tracker = global_env->compaction_mem_tracker();
+    options.update_mem_tracker = global_env->update_mem_tracker();
     options.need_write_cluster_id = !as_cn;
     starrocks::StorageEngine* engine = nullptr;
 
@@ -334,7 +344,7 @@ int main(int argc, char** argv) {
     }
 
     // cn need to support all ops for cloudnative table, so just start_be
-    start_be();
+    starrocks::start_be();
 
     if (starrocks::k_starrocks_exit_quick.load()) {
         LOG(INFO) << "BE is shutting down，will exit quickly";
