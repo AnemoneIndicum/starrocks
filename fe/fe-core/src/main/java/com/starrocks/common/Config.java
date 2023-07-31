@@ -634,6 +634,13 @@ public class Config extends ConfigBase {
     @ConfField(mutable = true)
     public static int thrift_rpc_retry_times = 3;
 
+    @ConfField
+    public static boolean thrift_rpc_strict_mode = true;
+
+    // thrift rpc max body limit size. -1 means unlimited
+    @ConfField
+    public static int thrift_rpc_max_body_size = -1;
+
     // May be necessary to modify the following BRPC configurations in high concurrency scenarios.
 
     // The size of BRPC connection pool. It will limit the concurrency of sending requests, because
@@ -889,7 +896,7 @@ public class Config extends ConfigBase {
      * It should be less than 'max_running_txn_num_per_db'
      */
     @ConfField(mutable = true, aliases = {"async_load_task_pool_size"})
-    public static int max_broker_load_job_concurrency = 2;
+    public static int max_broker_load_job_concurrency = 5;
 
     /**
      * Same meaning as *tablet_create_timeout_second*, but used when delete a tablet.
@@ -1555,6 +1562,12 @@ public class Config extends ConfigBase {
     public static boolean enable_statistic_collect_on_first_load = true;
 
     /**
+     * max await time for collect statistic for loading
+     */
+    @ConfField(mutable = true)
+    public static long semi_sync_collect_statistic_await_seconds = 30;
+
+    /**
      * The start time of day when auto-updates are enabled
      */
     @ConfField(mutable = true)
@@ -2023,10 +2036,10 @@ public class Config extends ConfigBase {
     public static long shard_group_clean_threshold_sec = 3600L;
 
     /**
-     * ShardDeleter run interval in seconds
+     * fe sync with star mgr meta interval in seconds
      */
     @ConfField
-    public static long shard_deleter_run_interval_sec = 600L;
+    public static long star_mgr_meta_sync_interval_sec = 600L;
 
     // ***********************************************************
     // * BEGIN: Cloud native meta server related configurations
@@ -2213,9 +2226,6 @@ public class Config extends ConfigBase {
 
     @ConfField(mutable = true)
     public static int lake_compaction_fail_history_size = 12;
-
-    @ConfField
-    public static int experimental_lake_publish_version_threads = 16;
 
     @ConfField(mutable = true, comment = "the max number of previous version files to keep")
     public static int lake_autovacuum_max_previous_versions = 0;
