@@ -18,8 +18,10 @@ package com.starrocks.connector.hive;
 import com.google.common.collect.ImmutableMap;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.HiveMetaStoreTable;
+import com.starrocks.catalog.HiveTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.Config;
+import com.starrocks.connector.ConnectorTableId;
 import com.starrocks.connector.PartitionUtil;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.hive.events.MetastoreNotificationFetchException;
@@ -40,7 +42,9 @@ import java.util.stream.Collectors;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.starrocks.connector.hive.HiveMetastoreApiConverter.toHiveCommonStats;
+import static com.starrocks.connector.hive.HiveMetastoreApiConverter.toMetastoreApiTable;
 import static com.starrocks.connector.hive.HiveMetastoreApiConverter.validateHiveTableType;
+import static com.starrocks.connector.hive.HiveMetastoreOperations.LOCATION_PROPERTY;
 
 public class HiveMetastore implements IHiveMetastore {
 
@@ -58,6 +62,20 @@ public class HiveMetastore implements IHiveMetastore {
         return client.getAllDatabaseNames();
     }
 
+    @Override
+    public void createDb(String dbName, Map<String, String> properties) {
+        String location = properties.getOrDefault(LOCATION_PROPERTY, "");
+        long dbId = ConnectorTableId.CONNECTOR_ID_GENERATOR.getNextId().asInt();
+        Database database = new Database(dbId, dbName, location);
+        client.createDatabase(HiveMetastoreApiConverter.toMetastoreApiDatabase(database));
+    }
+
+    @Override
+    public void dropDb(String dbName, boolean deleteData) {
+        client.dropDatabase(dbName, deleteData);
+    }
+
+    @Override
     public List<String> getAllTableNames(String dbName) {
         return client.getAllTableNames(dbName);
     }
@@ -66,6 +84,17 @@ public class HiveMetastore implements IHiveMetastore {
     public Database getDb(String dbName) {
         org.apache.hadoop.hive.metastore.api.Database db = client.getDb(dbName);
         return HiveMetastoreApiConverter.toDatabase(db);
+    }
+
+    @Override
+    public void createTable(String dbName, Table table) {
+        org.apache.hadoop.hive.metastore.api.Table hiveTable = toMetastoreApiTable((HiveTable) table);
+        client.createTable(hiveTable);
+    }
+
+    @Override
+    public void dropTable(String dbName, String tableName) {
+        client.dropTable(dbName, tableName);
     }
 
     public Table getTable(String dbName, String tableName) {

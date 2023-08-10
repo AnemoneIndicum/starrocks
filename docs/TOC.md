@@ -40,7 +40,8 @@
     + [Primary Key table](./table_design/table_types/primary_key_table.md)
   + Data distribution
     + [Data distribution](./table_design/Data_distribution.md)
-    + [Automatic partitioning](./table_design/automatic_partitioning.md)
+    + [Expression partitioning (recommended)](./table_design/expression_partitioning.md)
+    + [List partitioning](./table_design/list_partitioning.md)
     + [Dynamic partitioning](./table_design/dynamic_partitioning.md)
     + [Temporary partition](./table_design/Temporary_partition.md)
   + [Data compression](./table_design/data_compression.md)
@@ -81,6 +82,7 @@
   + [External table](./data_source/External_table.md)
   + [File external table](./data_source/file_external_table.md)
   + [Data Cache](./data_source/data_cache.md)
+  + [Data lake-related FAQ](./data_source/datalake_faq.md)
 + Query Acceleration
   + [Gather CBO statistics](./using_starrocks/Cost_based_optimizer.md)
   + [Synchronous materialized view](./using_starrocks/Materialized_view-single_table.md)
@@ -340,6 +342,7 @@
       + [bitmap](./sql-reference/sql-functions/aggregate-functions/bitmap.md)
       + [bitmap_agg](./sql-reference/sql-functions/bitmap-functions/bitmap_agg.md)
       + [count](./sql-reference/sql-functions/aggregate-functions/count.md)
+      + [group_concat](./sql-reference/sql-functions/string-functions/group_concat.md)
       + [grouping](./sql-reference/sql-functions/aggregate-functions/grouping.md)
       + [grouping_id](./sql-reference/sql-functions/aggregate-functions/grouping_id.md)
       + [hll_empty](./sql-reference/sql-functions/aggregate-functions/hll_empty.md)
@@ -660,6 +663,7 @@
       + [like](./sql-reference/sql-functions/like_predicate-functions/like.md)
       + [regexp](./sql-reference/sql-functions/like_predicate-functions/regexp.md)
       + [regexp_extract](./sql-reference/sql-functions/string-functions/regexp_extract.md)
+      + [regexp_extract_all](./sql-reference/sql-functions/like_predicate-functions/regexp_extract_all.md)
       + [regexp_replace](./sql-reference/sql-functions/string-functions/regexp_replace.md)
     + Percentile Functions
       + [percentile_approx_raw](./sql-reference/sql-functions/percentile-functions/percentile_approx_raw.md)
@@ -674,6 +678,8 @@
     + Table Functions
       + [files](./sql-reference/sql-functions/table-functions/files.md)
       + [generate_series](./sql-reference/sql-functions/table-functions/generate_series.md)
+      + [json_each](./sql-reference/sql-functions/json-functions/json-query-and-processing-functions/json_each.md)
+      + [unnest](./sql-reference/sql-functions/array-functions/unnest.md)
     + Utility Functions
       + [current_role](./sql-reference/sql-functions/utility-functions/current_role.md)
       + [current_version](./sql-reference/sql-functions/utility-functions/current_version.md)

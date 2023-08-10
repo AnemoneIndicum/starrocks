@@ -576,10 +576,14 @@ public class Column implements Writable, GsonPreProcessable, GsonPostProcessable
             return defaultValue;
         } else if (defaultExpr != null) {
             if ("now()".equalsIgnoreCase(defaultExpr.getExpr())) {
-                extras.add("DEFAULT_GENERATED");
+                if (extras != null) {
+                    extras.add("DEFAULT_GENERATED");
+                }
                 return "CURRENT_TIMESTAMP";
             } else {
-                extras.add("DEFAULT_GENERATED");
+                if (extras != null) {
+                    extras.add("DEFAULT_GENERATED");
+                }
                 return defaultExpr.getExpr();
             }
         }
@@ -681,7 +685,7 @@ public class Column implements Writable, GsonPreProcessable, GsonPostProcessable
             return false;
         }
 
-        return comment.equals(other.getComment());
+        return comment == null ? other.comment == null : comment.equals(other.getComment());
     }
 
     @Override

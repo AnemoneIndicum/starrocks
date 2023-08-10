@@ -21,6 +21,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
@@ -85,6 +86,21 @@ public class DateUtils {
         DATETIME_FORMATTERS[1][0][1] = unixDatetimeStrictFormatter("%y-%m-%eT%H:%i:%s", false);
         DATETIME_FORMATTERS[1][1][0] = unixDatetimeStrictFormatter("%y-%m-%e %H:%i:%s.%f", false);
         DATETIME_FORMATTERS[1][1][1] = unixDatetimeStrictFormatter("%y-%m-%eT%H:%i:%s.%f", false);
+    }
+
+    public static String formatDateTimeUnix(LocalDateTime dateTime) {
+        if (dateTime == null) {
+            return null;
+        }
+        return dateTime.format(DATE_TIME_FORMATTER_UNIX);
+    }
+
+    public static LocalDateTime fromEpochMillis(long epochMilli) {
+        return LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMilli), ZoneOffset.UTC);
+    }
+
+    public static LocalDateTime parseUnixDateTime(String str) {
+        return LocalDateTime.parse(str, DATE_TIME_FORMATTER_UNIX);
     }
 
     public static LocalDateTime parseStrictDateTime(String str) {
@@ -235,9 +251,10 @@ public class DateUtils {
                         break;
                     case 'f': // %f Microseconds (000000..999999)
                         if (isOutputFormat) {
-                            builder.padNext(6, '0');
+                            builder.appendFraction(ChronoField.MICRO_OF_SECOND, 6, 6, false);
+                        } else {
+                            builder.appendFraction(ChronoField.MICRO_OF_SECOND, 1, 6, false);
                         }
-                        builder.appendFraction(ChronoField.MICRO_OF_SECOND, 1, 6, false);
                         break;
                     case 'u': // %u Week (00..53), where Monday is the first day of the week
                         builder.appendValueReduced(ChronoField.ALIGNED_WEEK_OF_YEAR, 2, 2, 0);

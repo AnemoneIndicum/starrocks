@@ -155,6 +155,9 @@ public:
     DataDir* get_store(const std::string& path);
     DataDir* get_store(int64_t path_hash);
 
+    bool is_lake_persistent_index_dir_inited();
+    DataDir* get_persistent_index_store();
+
     uint32_t available_storage_medium_type_count() { return _available_storage_medium_type_count; }
 
     virtual Status set_cluster_id(int32_t cluster_id);
@@ -324,6 +327,8 @@ private:
     void* _repair_compaction_thread_callback(void* arg);
     // manual compaction function
     void* _manual_compaction_thread_callback(void* arg);
+    // pk index major compaction function
+    void* _pk_index_major_compaction_thread_callback(void* arg);
 
     bool _check_and_run_manual_compaction_task();
 
@@ -358,7 +363,10 @@ private:
     EngineOptions _options;
     std::mutex _store_lock;
     std::map<std::string, DataDir*> _store_map;
+    DataDir* _persistent_index_data_dir = nullptr;
     uint32_t _available_storage_medium_type_count;
+
+    std::atomic<bool> _lake_persistent_index_dir_inited{false};
 
     bool _is_all_cluster_id_exist;
 
@@ -387,6 +395,8 @@ private:
     std::vector<std::pair<int64_t, std::vector<uint32_t>>> _repair_compaction_tasks;
     std::vector<std::pair<int64_t, std::vector<std::pair<uint32_t, std::string>>>> _executed_repair_compaction_tasks;
     std::vector<std::thread> _manual_compaction_threads;
+    // thread to run pk index major compaction
+    std::thread _pk_index_major_compaction_thread;
     // threads to clean all file descriptor not actively in use
     std::thread _fd_cache_clean_thread;
     std::thread _adjust_cache_thread;

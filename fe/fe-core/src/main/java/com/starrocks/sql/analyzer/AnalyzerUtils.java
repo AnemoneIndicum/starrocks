@@ -166,8 +166,8 @@ public class AnalyzerUtils {
         return !aggregates.isEmpty() || !groupByExpressions.isEmpty();
     }
 
-    private static Function getDBUdfFunction(ConnectContext context, FunctionName fnName,
-                                             Type[] argTypes) {
+    public static Function getDBUdfFunction(ConnectContext context, FunctionName fnName,
+                                            Type[] argTypes) {
         String dbName = fnName.getDb();
         if (StringUtils.isEmpty(dbName)) {
             dbName = context.getDatabase();
@@ -184,7 +184,7 @@ public class AnalyzerUtils {
             Function fn = db.getFunction(search, Function.CompareMode.IS_NONSTRICT_SUPERTYPE_OF);
 
             if (fn != null) {
-                PrivilegeChecker.checkFunctionAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+                Authorizer.checkFunctionAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                         db, fn, PrivilegeType.USAGE);
             }
 
@@ -199,7 +199,7 @@ public class AnalyzerUtils {
         Function fn = context.getGlobalStateMgr().getGlobalFunctionMgr()
                 .getFunction(search, Function.CompareMode.IS_NONSTRICT_SUPERTYPE_OF);
         if (fn != null) {
-            PrivilegeChecker.checkGlobalFunctionAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
+            Authorizer.checkGlobalFunctionAction(context.getCurrentUserIdentity(), context.getCurrentRoleIds(),
                     fn, PrivilegeType.USAGE);
         }
 
@@ -213,7 +213,8 @@ public class AnalyzerUtils {
         }
         if (fn != null) {
             if (!Config.enable_udf) {
-                throw new StarRocksPlannerException("CBO Optimizer don't support UDF function: " + fnName,
+                throw new StarRocksPlannerException(
+                        "UDF is not enabled in FE, please configure enable_udf=true in fe/conf/fe.conf",
                         ErrorType.USER_ERROR);
             }
         }
@@ -1119,6 +1120,15 @@ public class AnalyzerUtils {
             }
         };
         return queryStatement.getQueryRelation().accept(slotRefResolver, null);
+    }
+
+    public static boolean containsIgnoreCase(List<String> list, String soughtFor) {
+        for (String current : list) {
+            if (current.equalsIgnoreCase(soughtFor)) {
+                return true;
+            }
+        }
+        return false;
     }
 
 }

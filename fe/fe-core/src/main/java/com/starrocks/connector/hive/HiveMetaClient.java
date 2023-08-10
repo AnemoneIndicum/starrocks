@@ -157,7 +157,7 @@ public class HiveMetaClient {
             return (T) method.invoke(client.hiveClient, args);
         } catch (Exception e) {
             LOG.error(messageIfError, e);
-            connectionException = new StarRocksConnectorException(messageIfError + ", msg: " + e.getMessage());
+            connectionException = new StarRocksConnectorException(messageIfError + ", msg: " + e.getMessage(), e);
             throw connectionException;
         } finally {
             if (client == null && connectionException != null) {
@@ -178,9 +178,38 @@ public class HiveMetaClient {
         }
     }
 
+    public void createDatabase(Database database) {
+        Class<?>[] argClasses = {Database.class};
+
+        try (PlannerProfile.ScopedTimer ignored = PlannerProfile.getScopedTimer("HMS.createDatabase")) {
+            callRPC("createDatabase", "Failed to create database " + database.getName(), argClasses, database);
+        }
+    }
+
+    public void dropDatabase(String dbName, boolean deleteData) {
+        try (PlannerProfile.ScopedTimer ignored = PlannerProfile.getScopedTimer("HMS.dropDatabase")) {
+            callRPC("dropDatabase", "Failed to drop database " + dbName, dbName, deleteData, false, false);
+        }
+    }
+
     public List<String> getAllTableNames(String dbName) {
         try (PlannerProfile.ScopedTimer ignored = PlannerProfile.getScopedTimer("HMS.getAllTables")) {
             return callRPC("getAllTables", "Failed to get all table names on database: " + dbName, dbName);
+        }
+    }
+
+    public void createTable(Table table) {
+        Class<?>[] argClasses = {Table.class};
+        try (PlannerProfile.ScopedTimer ignored = PlannerProfile.getScopedTimer("HMS.createTable")) {
+            callRPC("createTable", "Failed to create table " + table.getDbName() + "." + table.getTableName(),
+                    argClasses, table);
+        }
+    }
+
+    public void dropTable(String dbName, String tableName) {
+        try (PlannerProfile.ScopedTimer ignored = PlannerProfile.getScopedTimer("HMS.dropTable")) {
+            callRPC("dropTable", "Failed to drop table " + dbName + "." + tableName,
+                    dbName, tableName, true, false);
         }
     }
 
