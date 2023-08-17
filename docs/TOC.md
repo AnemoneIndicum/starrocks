@@ -67,7 +67,7 @@
   + [Export data using EXPORT](./unloading/Export.md)
   + [Read data from StarRocks using Spark connector](./unloading/Spark_connector.md)
   + [Read data from StarRocks using Flink connector](./unloading/Flink_connector.md)
-+ Query Data Sources
++ Query Data Lakes
   + Catalog
     + [Overview](./data_source/catalog/catalog_overview.md)
     + [Default catalog](./data_source/catalog/default_catalog.md)
@@ -328,9 +328,8 @@
         + [BITMAP](./sql-reference/sql-statements/data-types/BITMAP.md)
         + [HLL](./sql-reference/sql-statements/data-types/HLL.md)
     + [Keywords](./sql-reference/sql-statements/keywords.md)
-    + [AUTO_INCREMENT](./sql-reference/sql-statements/auto_increment.md)
-    + [Generated columns](./sql-reference/sql-statements/generated_columns.md)
   + Function Reference
+    + [Function list](./sql-reference/sql-functions/function-list.md)
     + [Java UDFs](./sql-reference/sql-functions/JAVA_UDF.md)
     + [Window functions](./sql-reference/sql-functions/Window_function.md)
     + [Lambda expression](./sql-reference/sql-functions/Lambda_expression.md)
@@ -342,6 +341,9 @@
       + [bitmap](./sql-reference/sql-functions/aggregate-functions/bitmap.md)
       + [bitmap_agg](./sql-reference/sql-functions/bitmap-functions/bitmap_agg.md)
       + [count](./sql-reference/sql-functions/aggregate-functions/count.md)
+      + [corr](./sql-reference/sql-functions/aggregate-functions/corr.md)
+      + [covar_pop](./sql-reference/sql-functions/aggregate-functions/covar_pop.md)
+      + [covar_samp](./sql-reference/sql-functions/aggregate-functions/covar_samp.md)
       + [group_concat](./sql-reference/sql-functions/string-functions/group_concat.md)
       + [grouping](./sql-reference/sql-functions/aggregate-functions/grouping.md)
       + [grouping_id](./sql-reference/sql-functions/aggregate-functions/grouping_id.md)
@@ -648,6 +650,7 @@
       + [space](./sql-reference/sql-functions/string-functions/space.md)
       + [split](./sql-reference/sql-functions/string-functions/split.md)
       + [split_part](./sql-reference/sql-functions/string-functions/split_part.md)
+      + [substring_index](./sql-reference/sql-functions/string-functions/substring_index.md)
       + [starts_with](./sql-reference/sql-functions/string-functions/starts_with.md)
       + [strleft](./sql-reference/sql-functions/string-functions/strleft.md)
       + [strright](./sql-reference/sql-functions/string-functions/strright.md)
@@ -681,8 +684,10 @@
       + [json_each](./sql-reference/sql-functions/json-functions/json-query-and-processing-functions/json_each.md)
       + [unnest](./sql-reference/sql-functions/array-functions/unnest.md)
     + Utility Functions
+      + [catalog](./sql-reference/sql-functions/utility-functions/catalog.md)
       + [current_role](./sql-reference/sql-functions/utility-functions/current_role.md)
       + [current_version](./sql-reference/sql-functions/utility-functions/current_version.md)
+      + [database](./sql-reference/sql-functions/utility-functions/database.md)
       + [host_name](./sql-reference/sql-functions/utility-functions/host_name.md)
       + [isnull](./sql-reference/sql-functions/utility-functions/isnull.md)
       + [isnotnull](./sql-reference/sql-functions/utility-functions/isnotnull.md)
@@ -693,6 +698,8 @@
       + [version](./sql-reference/sql-functions/utility-functions/version.md)
     + [cast function](./sql-reference/sql-functions/cast.md)
     + [hash function](./sql-reference/sql-functions/hash-functions/murmur_hash3_32.md)
+  + [AUTO_INCREMENT](./sql-reference/sql-statements/auto_increment.md)
+  + [Generated columns](./sql-reference/sql-statements/generated_columns.md)
   + [System variables](./reference/System_variable.md)
   + [User-defined variables](./reference/user_defined_variables.md)
   + [Error code](./reference/Error_code.md)

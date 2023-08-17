@@ -491,7 +491,7 @@ CONF_Bool(thrift_rpc_strict_mode, "true");
 CONF_Int32(thrift_rpc_max_body_size, "0");
 
 // txn commit rpc timeout
-CONF_mInt32(txn_commit_rpc_timeout_ms, "20000");
+CONF_mInt32(txn_commit_rpc_timeout_ms, "60000");
 
 // If set to true, metric calculator will run
 CONF_Bool(enable_metric_calculator, "true");
@@ -728,6 +728,7 @@ CONF_Bool(rewrite_partial_segment, "true");
 CONF_String(object_storage_access_key_id, "");
 CONF_String(object_storage_secret_access_key, "");
 CONF_String(object_storage_endpoint, "");
+CONF_String(object_storage_bucket, "");
 // Tencent cos needs to add region information
 CONF_String(object_storage_region, "");
 CONF_Int64(object_storage_max_connection, "102400");
@@ -752,7 +753,9 @@ CONF_Int64(object_storage_request_timeout_ms, "-1");
 
 // orc reader
 CONF_Bool(enable_orc_late_materialization, "true");
-// orc reader, if RowGroup/Stripe/File size is less than this value, read all data.
+CONF_Int32(orc_row_index_cache_max_size, "1048576");
+CONF_Int32(orc_stripe_cache_max_size, "8388608");
+CONF_Bool(enable_orc_libdeflate_decompression, "true");
 CONF_Int32(orc_file_cache_max_size, "8388608");
 CONF_Int32(orc_natural_read_size, "8388608");
 CONF_mBool(orc_coalesce_read_enable, "true");
@@ -781,6 +784,8 @@ CONF_Bool(hdfs_client_enable_hedged_read, "false");
 CONF_Int32(hdfs_client_hedged_read_threadpool_size, "128");
 // dfs.client.hedged.read.threshold.millis
 CONF_Int32(hdfs_client_hedged_read_threshold_millis, "2500");
+CONF_Int32(hdfs_client_max_cache_size, "8");
+CONF_Int32(hdfs_client_io_read_retry, "0");
 
 // Enable output trace logs in aws-sdk-cpp for diagnosis purpose.
 // Once logging is enabled in your application, the SDK will generate log files in your current working directory
@@ -952,7 +957,8 @@ CONF_Bool(block_cache_direct_io_enable, "false");
 
 CONF_mInt64(l0_l1_merge_ratio, "10");
 CONF_mInt64(l0_max_file_size, "209715200"); // 200MB
-CONF_mInt64(l0_max_mem_usage, "67108864");  // 64MB
+CONF_mInt64(l0_min_mem_usage, "2097152");   // 2MB
+CONF_mInt64(l0_max_mem_usage, "104857600"); // 100MB
 // if l0_mem_size exceeds this value, l0 need snapshot
 CONF_mInt64(l0_snapshot_size, "16777216"); // 16MB
 CONF_mInt64(max_tmp_l1_num, "10");
@@ -1025,6 +1031,9 @@ CONF_mInt32(primary_key_limit_size, "128");
 CONF_mBool(enable_short_key_for_one_column_filter, "false");
 
 CONF_mBool(enable_http_stream_load_limit, "false");
+CONF_mInt32(finish_publish_version_internal, "100");
+
+CONF_mInt32(get_txn_status_internal_sec, "30");
 
 CONF_mBool(dump_metrics_with_bvar, "true");
 

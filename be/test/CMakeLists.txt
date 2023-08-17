@@ -150,8 +150,7 @@ set(EXEC_FILES
         ./formats/avro/nullable_column_test.cpp
         ./formats/orc/orc_chunk_reader_test.cpp
         ./formats/orc/orc_lazy_load_test.cpp
-        ./formats/orc/orc_test_util/MemoryOutputStream.cc
-        ./formats/orc/orc_test_util/MemoryInputStream.cc
+        ./formats/orc/orc_column_reader_test.cpp
         ./formats/parquet/parquet_schema_test.cpp
         ./formats/parquet/encoding_test.cpp
         ./formats/parquet/page_reader_test.cpp
@@ -284,6 +283,7 @@ set(EXEC_FILES
         ./storage/binlog_reader_test.cpp
         ./storage/tablet_binlog_test.cpp
         ./storage/publish_version_task_test.cpp
+        ./storage/publish_version_manager_test.cpp
         ./storage/get_use_pk_index_test.cpp
         ./runtime/buffer_control_block_test.cpp
         ./runtime/datetime_value_test.cpp

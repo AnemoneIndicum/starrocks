@@ -17,7 +17,7 @@ Release date: August 7, 2023
 
 - Supports accessing views created on tables within [Hive catalogs](../data_source/catalog/hive_catalog.md).
 - Supports accessing Parquet-formatted Iceberg v2 tables.
-- [Preview] Supports sinking data to Parquet-formatted Iceberg tables.
+- [Preview] Supports [sinking data to Parquet-formatted Iceberg tables](../data_source/catalog/iceberg_catalog.md#sink-data-to-an-iceberg-table).
 - [Preview] Supports accessing data stored in Elasticsearch by using [Elasticsearch catalogs](../data_source/catalog/elasticsearch_catalog.md). This simplifies the creation of Elasticsearch external tables.
 - [Preview] Supports performing analytics on streaming data stored in Apache Paimon by using [Paimon catalogs](../data_source/catalog/paimon_catalog.md).
 
@@ -133,7 +133,8 @@ Fixed the following issues:
 
 - The `storage_cache_ttl` parameter is deleted from the table creation syntax used for StarRocks shared-data clusters. Now the data in the local cache is evicted based on the LRU algorithm.
 - The BE configuration items `disable_storage_page_cache` and `alter_tablet_worker_count` and the FE configuration item `lake_compaction_max_tasks` are changed from immutable parameters to mutable parameters.
-- The default values of the BE configuration items `block_cache_checksum_enable` and `enable_new_load_on_memory` are changed from `true` to `false`.
+- The default value of the BE configuration item `block_cache_checksum_enable` is changed from `true` to `false`.
+- The default value of the BE configuration item `enable_new_load_on_memory_limit_exceeded` is changed from `false` to `true`.
 - The default value of the FE configuration item `max_running_txn_num_per_db` is changed from `100` to `1000`.
 - The default value of the FE configuration item `http_max_header_size` is changed from `8192` to `32768`.
 - The default value of the FE configuration item `tablet_create_timeout_second` is changed from `1` to `10`.

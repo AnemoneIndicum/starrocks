@@ -21,10 +21,10 @@ import com.starrocks.planner.PlanFragment;
 import com.starrocks.planner.ScanNode;
 import com.starrocks.planner.StreamLoadPlanner;
 import com.starrocks.proto.PPlanFragmentCancelReason;
-import com.starrocks.proto.PQueryStatistics;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.QueryStatisticsItem;
 import com.starrocks.qe.RowBatch;
+import com.starrocks.qe.scheduler.slot.LogicalSlot;
 import com.starrocks.sql.LoadPlanner;
 import com.starrocks.sql.plan.ExecPlan;
 import com.starrocks.thrift.TDescriptorTable;
@@ -91,6 +91,8 @@ public abstract class Coordinator {
 
     public abstract void onFinished();
 
+    public abstract LogicalSlot getSlot();
+
     // ------------------------------------------------------------------------------------
     // Methods for query.
     // ------------------------------------------------------------------------------------
@@ -131,7 +133,7 @@ public abstract class Coordinator {
 
     public abstract void setExecPlanSupplier(Supplier<ExecPlan> execPlanSupplier);
 
-    public abstract RuntimeProfile buildMergedQueryProfile(PQueryStatistics statistics);
+    public abstract RuntimeProfile buildMergedQueryProfile();
 
     public abstract RuntimeProfile getQueryProfile();
 
