@@ -606,6 +606,7 @@ void StorageEngine::stop() {
     JOIN_THREAD(_unused_rowset_monitor_thread)
     JOIN_THREAD(_garbage_sweeper_thread)
     JOIN_THREAD(_disk_stat_monitor_thread)
+    wake_finish_publish_vesion_thread();
     JOIN_THREAD(_finish_publish_version_thread)
 
     JOIN_THREADS(_base_compaction_threads)
@@ -617,7 +618,7 @@ void StorageEngine::stop() {
     JOIN_THREADS(_manual_compaction_threads)
     JOIN_THREADS(_tablet_checkpoint_threads)
 
-    JOIN_THREAD(_pk_index_major_compaction_thread);
+    JOIN_THREAD(_pk_index_major_compaction_thread)
 
     JOIN_THREAD(_fd_cache_clean_thread)
     JOIN_THREAD(_adjust_cache_thread)
@@ -942,6 +943,17 @@ Status StorageEngine::_perform_update_compaction(DataDir* data_dir) {
         return Status::InternalError("not an updatable tablet");
     }
     TRACE("found best tablet $0", best_tablet->tablet_id());
+
+    // The concurrency of migration and compaction will lead to inconsistency between the meta and
+    // primary index cache of the new tablet. So we should abort the compaction for the old tablet
+    // when executing migration.
+    std::shared_lock rlock(best_tablet->get_migration_lock(), std::try_to_lock);
+    if (!rlock.owns_lock()) {
+        return Status::InternalError("Fail to get migration lock, tablet_id: {}", best_tablet->tablet_id());
+    }
+    if (Tablet::check_migrate(best_tablet)) {
+        return Status::InternalError("Fail to check migrate tablet, tablet_id: {}", best_tablet->tablet_id());
+    }
 
     Status res;
     int64_t duration_ns = 0;
