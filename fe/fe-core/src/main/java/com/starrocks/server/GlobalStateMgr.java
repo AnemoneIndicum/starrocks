@@ -201,6 +201,7 @@ import com.starrocks.persist.MultiEraseTableInfo;
 import com.starrocks.persist.OperationType;
 import com.starrocks.persist.PartitionPersistInfo;
 import com.starrocks.persist.PartitionPersistInfoV2;
+import com.starrocks.persist.PhysicalPartitionPersistInfoV2;
 import com.starrocks.persist.PrivInfo;
 import com.starrocks.persist.RecoverInfo;
 import com.starrocks.persist.RenameMaterializedViewLog;
@@ -2445,6 +2446,14 @@ public class GlobalStateMgr {
         localMetastore.createTable(stmt.getCreateTableStmt());
     }
 
+    public void addSubPartitions(Database db, String tableName, Partition partition, int num) throws DdlException {
+        localMetastore.addSubPartitions(db, tableName, partition, num);
+    }
+
+    public void replayAddSubPartition(PhysicalPartitionPersistInfoV2 info) throws DdlException {
+        localMetastore.replayAddSubPartition(info);
+    }
+
     public void addPartitions(Database db, String tableName, AddPartitionClause addPartitionClause)
             throws DdlException, AnalysisException {
         localMetastore.addPartitions(db, tableName, addPartitionClause);
@@ -2650,6 +2659,13 @@ public class GlobalStateMgr {
                         .append(partitionDuration).append("\"");
             }
 
+            if (olapTable.getAutomaticBucketSize() > 0) {
+                sb.append(StatsConstants.TABLE_PROPERTY_SEPARATOR)
+                        .append(PropertyAnalyzer.PROPERTIES_BUCKET_SIZE)
+                        .append("\" = \"")
+                        .append(olapTable.getAutomaticBucketSize()).append("\"");
+            }
+
             if (table.isCloudNativeTable()) {
                 Map<String, String> storageProperties = olapTable.getProperties();
 
@@ -2777,6 +2793,13 @@ public class GlobalStateMgr {
                 }
             }
 
+            if (olapTable.primaryIndexCacheExpireSec() > 0) {
+                sb.append(StatsConstants.TABLE_PROPERTY_SEPARATOR)
+                        .append(PropertyAnalyzer.PROPERTIES_PRIMARY_INDEX_CACHE_EXPIRE_SEC)
+                        .append("\" = \"");
+                sb.append(olapTable.primaryIndexCacheExpireSec()).append("\"");
+            }
+
             // compression type
             sb.append(StatsConstants.TABLE_PROPERTY_SEPARATOR).append(PropertyAnalyzer.PROPERTIES_COMPRESSION)
                     .append("\" = \"");
@@ -2880,10 +2903,10 @@ public class GlobalStateMgr {
             sb.append("\"database\" = \"").append(hiveTable.getDbName()).append("\",\n");
             sb.append("\"table\" = \"").append(hiveTable.getTableName()).append("\",\n");
             sb.append("\"resource\" = \"").append(hiveTable.getResourceName()).append("\"");
-            if (!hiveTable.getHiveProperties().isEmpty()) {
+            if (!hiveTable.getProperties().isEmpty()) {
                 sb.append(",\n");
             }
-            sb.append(new PrintableMap<>(hiveTable.getHiveProperties(), " = ", true, true, false).toString());
+            sb.append(new PrintableMap<>(hiveTable.getProperties(), " = ", true, true, false).toString());
             sb.append("\n)");
         } else if (table.getType() == TableType.FILE) {
             FileTable fileTable = (FileTable) table;

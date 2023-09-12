@@ -43,10 +43,6 @@ namespace starrocks::spill {
 
 // some metrics for spill
 struct SpillProcessMetrics {
-private:
-    // For profile
-    std::shared_ptr<RuntimeProfile> _spiller_metrics;
-
 public:
     SpillProcessMetrics() = default;
     SpillProcessMetrics(RuntimeProfile* profile, std::atomic_int64_t* total_spill_bytes);
@@ -194,6 +190,8 @@ public:
     const std::shared_ptr<spill::Serde>& serde() { return _serde; }
     BlockManager* block_manager() { return _block_manager; }
     const ChunkBuilder& chunk_builder() { return _chunk_builder; }
+
+    Status reset_state(RuntimeState* state);
 
 private:
     Status _acquire_input_stream(RuntimeState* state);

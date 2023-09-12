@@ -25,6 +25,7 @@ import com.starrocks.analysis.CastExpr;
 import com.starrocks.analysis.CloneExpr;
 import com.starrocks.analysis.CollectionElementExpr;
 import com.starrocks.analysis.CompoundPredicate;
+import com.starrocks.analysis.DictQueryExpr;
 import com.starrocks.analysis.ExistsPredicate;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.FunctionCallExpr;
@@ -553,6 +554,10 @@ public abstract class AstVisitor<R, C> {
     }
 
     public R visitShowRunningQueriesStatement(ShowRunningQueriesStmt statement, C context) {
+        return visitStatement(statement, context);
+    }
+
+    public R visitShowResourceGroupUsageStatement(ShowResourceGroupUsageStmt statement, C context) {
         return visitStatement(statement, context);
     }
 
@@ -1194,5 +1199,9 @@ public abstract class AstVisitor<R, C> {
 
     public R visitGroupByClause(GroupByClause node, C context) {
         return null;
+    }
+
+    public R visitDictQueryExpr(DictQueryExpr node, C context) {
+        return visitExpression(node, context);
     }
 }
