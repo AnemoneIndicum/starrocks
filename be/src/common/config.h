@@ -669,6 +669,9 @@ CONF_Int64(pipeline_scan_thread_pool_queue_size, "102400");
 // The number of execution threads for pipeline engine.
 CONF_Int64(pipeline_exec_thread_pool_thread_num, "0");
 // The number of threads for preparing fragment instances in pipeline engine, vCPUs by default.
+// *  "n": positive integer, fixed number of threads to n.
+// *  "0": default value, means the same as number of cpu cores.
+// * "-n": negative integer, means n times of number of cpu cores.
 CONF_Int64(pipeline_prepare_thread_pool_thread_num, "0");
 CONF_Int64(pipeline_prepare_thread_pool_queue_size, "102400");
 // The number of threads for executing sink io task in pipeline engine, vCPUs by default.
@@ -1048,5 +1051,7 @@ CONF_mInt32(finish_publish_version_internal, "100");
 CONF_mInt32(get_txn_status_internal_sec, "30");
 
 CONF_mBool(dump_metrics_with_bvar, "true");
+
+CONF_mBool(enable_drop_tablet_if_unfinished_txn, "true");
 
 } // namespace starrocks::config
