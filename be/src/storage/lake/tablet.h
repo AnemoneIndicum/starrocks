@@ -21,11 +21,9 @@
 #include "common/statusor.h"
 #include "gen_cpp/types.pb.h"
 #include "storage/lake/metadata_iterator.h"
-#include "storage/lake/rowset.h"
-#include "storage/lake/tablet_manager.h"
 #include "storage/lake/tablet_metadata.h"
 #include "storage/lake/txn_log.h"
-#include "storage/lake/update_manager.h"
+#include "storage/lake/types_fwd.h"
 
 namespace starrocks {
 class TabletSchema;
@@ -84,14 +82,6 @@ public:
 
     StatusOr<TxnLogPtr> get_txn_vlog(int64_t version);
 
-    [[nodiscard]] Status delete_txn_log(int64_t txn_id);
-
-    [[nodiscard]] Status delete_txn_vlog(int64_t version);
-
-    [[nodiscard]] Status put_tablet_metadata_lock(int64_t version, int64_t expire_time);
-
-    [[nodiscard]] Status delete_tablet_metadata_lock(int64_t version, int64_t expire_time);
-
     // `segment_max_rows` is used in vertical writer
     // NOTE: This method may update the version hint
     StatusOr<std::unique_ptr<TabletWriter>> new_writer(WriterType type, int64_t txn_id,
@@ -101,6 +91,8 @@ public:
 
     // NOTE: This method may update the version hint
     StatusOr<std::shared_ptr<const TabletSchema>> get_schema();
+
+    StatusOr<std::shared_ptr<const TabletSchema>> get_schema_by_index_id(int64_t index_id);
 
     StatusOr<std::vector<RowsetPtr>> get_rowsets(int64_t version);
 

@@ -69,6 +69,7 @@
 #include "storage/tablet_meta_manager.h"
 #include "storage/task/engine_task.h"
 #include "storage/update_manager.h"
+#include "testutil/sync_point.h"
 #include "util/bthreads/executor.h"
 #include "util/lru_cache.h"
 #include "util/scoped_cleanup.h"
@@ -277,14 +278,6 @@ Status StorageEngine::_init_store_map() {
     for (auto& store : tmp_stores) {
         _store_map.emplace(store.second->path(), store.second);
         store.first = false;
-        if (!_lake_persistent_index_dir_inited) {
-            auto status = store.second->init_persistent_index_dir();
-            if (!status.ok()) {
-                return Status::InternalError(strings::Substitute("init persistIndex dir failed, error=$0", error_msg));
-            }
-            _lake_persistent_index_dir_inited = true;
-            _persistent_index_data_dir = store.second;
-        }
     }
 
     release_guard.cancel();
@@ -532,13 +525,14 @@ DataDir* StorageEngine::get_store(int64_t path_hash) {
     return nullptr;
 }
 
-bool StorageEngine::is_lake_persistent_index_dir_inited() {
-    return _lake_persistent_index_dir_inited;
-}
-
-// maybe nullptr if storage_root_path is not set
-DataDir* StorageEngine::get_persistent_index_store() {
-    return _persistent_index_data_dir;
+// maybe nullptr if as cn
+DataDir* StorageEngine::get_persistent_index_store(int64_t tablet_id) {
+    auto stores = get_stores<false>();
+    if (stores.empty()) {
+        return nullptr;
+    } else {
+        return stores[tablet_id % stores.size()];
+    }
 }
 
 static bool too_many_disks_are_failed(uint32_t unused_num, uint32_t total_num) {
@@ -1391,6 +1385,7 @@ Status StorageEngine::get_next_increment_id_interval(int64_t tableid, size_t num
             _auto_increment_meta_map.insert({tableid, std::make_shared<AutoIncrementMeta>()});
         }
         meta = _auto_increment_meta_map[tableid];
+        TEST_SYNC_POINT_CALLBACK("StorageEngine::get_next_increment_id_interval.1", &meta);
     }
 
     // lock for different tableid

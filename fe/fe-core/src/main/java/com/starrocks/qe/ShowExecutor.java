@@ -101,6 +101,7 @@ import com.starrocks.common.util.PrintableMap;
 import com.starrocks.common.util.ProfileManager;
 import com.starrocks.common.util.TimeUtils;
 import com.starrocks.credential.CredentialUtil;
+import com.starrocks.datacache.DataCacheMgr;
 import com.starrocks.load.DeleteMgr;
 import com.starrocks.load.ExportJob;
 import com.starrocks.load.ExportMgr;
@@ -172,6 +173,7 @@ import com.starrocks.sql.ast.ShowCreateDbStmt;
 import com.starrocks.sql.ast.ShowCreateExternalCatalogStmt;
 import com.starrocks.sql.ast.ShowCreateRoutineLoadStmt;
 import com.starrocks.sql.ast.ShowCreateTableStmt;
+import com.starrocks.sql.ast.ShowDataCacheRulesStmt;
 import com.starrocks.sql.ast.ShowDataStmt;
 import com.starrocks.sql.ast.ShowDbStmt;
 import com.starrocks.sql.ast.ShowDeleteStmt;
@@ -376,6 +378,8 @@ public class ShowExecutor {
             handleShowPlugins();
         } else if (stmt instanceof ShowSqlBlackListStmt) {
             handleShowSqlBlackListStmt();
+        } else if (stmt instanceof ShowDataCacheRulesStmt) {
+            handleShowDataCacheRulesStmt();
         } else if (stmt instanceof ShowAnalyzeJobStmt) {
             handleShowAnalyzeJob();
         } else if (stmt instanceof ShowAnalyzeStatusStmt) {
@@ -1327,59 +1331,7 @@ public class ShowExecutor {
     // Handle help statement.
     private void handleHelp() {
         HelpStmt helpStmt = (HelpStmt) stmt;
-        String mark = helpStmt.getMask();
-        HelpModule module = HelpModule.getInstance();
-
-        // Get topic
-        HelpTopic topic = module.getTopic(mark);
-        // Get by Keyword
-        if (topic == null) {
-            List<String> topics = module.listTopicByKeyword(mark);
-            if (topics.size() == 0) {
-                // assign to avoid code style problem
-                topic = null;
-            } else if (topics.size() == 1) {
-                topic = module.getTopic(topics.get(0));
-            } else {
-                // Send topic list and category list
-                List<List<String>> rows = Lists.newArrayList();
-                for (String str : topics) {
-                    rows.add(Lists.newArrayList(str, "N"));
-                }
-                List<String> categories = module.listCategoryByName(mark);
-                for (String str : categories) {
-                    rows.add(Lists.newArrayList(str, "Y"));
-                }
-                resultSet = new ShowResultSet(helpStmt.getKeywordMetaData(), rows);
-                return;
-            }
-        }
-        if (topic != null) {
-            resultSet = new ShowResultSet(helpStmt.getMetaData(), Lists.<List<String>>newArrayList(
-                    Lists.newArrayList(topic.getName(), topic.getDescription(), topic.getExample())));
-        } else {
-            List<String> categories = module.listCategoryByName(mark);
-            if (categories.isEmpty()) {
-                // If no category match for this name, return
-                resultSet = new ShowResultSet(helpStmt.getKeywordMetaData(), EMPTY_SET);
-            } else if (categories.size() > 1) {
-                // Send category list
-                resultSet = new ShowResultSet(helpStmt.getCategoryMetaData(),
-                        Lists.<List<String>>newArrayList(categories));
-            } else {
-                // Send topic list and sub-category list
-                List<List<String>> rows = Lists.newArrayList();
-                List<String> topics = module.listTopicByCategory(categories.get(0));
-                for (String str : topics) {
-                    rows.add(Lists.newArrayList(str, "N"));
-                }
-                List<String> subCategories = module.listCategoryByCategory(categories.get(0));
-                for (String str : subCategories) {
-                    rows.add(Lists.newArrayList(str, "Y"));
-                }
-                resultSet = new ShowResultSet(helpStmt.getKeywordMetaData(), rows);
-            }
-        }
+        resultSet = new ShowResultSet(helpStmt.getKeywordMetaData(), EMPTY_SET);
     }
 
     // Show load statement.
@@ -1804,8 +1756,8 @@ public class ShowExecutor {
                             connectContext.getCurrentRoleIds(), new TableName(dbName, tableName));
                 } catch (AccessDeniedException e) {
                     ErrorReport.reportSemanticException(ErrorCode.ERR_TABLEACCESS_DENIED_ERROR, "SHOW DATA",
-                            connectContext.getQualifiedUser(),
-                            connectContext.getRemoteIP(),
+                            connectContext.getCurrentUserIdentity().getUser(),
+                            connectContext.getCurrentUserIdentity().getHost(),
                             tableName);
                 }
 
@@ -2520,6 +2472,11 @@ public class ShowExecutor {
             rows.add(oneSql);
         }
         resultSet = new ShowResultSet(showStmt.getMetaData(), rows);
+    }
+
+    private void handleShowDataCacheRulesStmt() {
+        ShowDataCacheRulesStmt showStmt = (ShowDataCacheRulesStmt) stmt;
+        resultSet = new ShowResultSet(showStmt.getMetaData(), DataCacheMgr.getInstance().getShowResultSetRows());
     }
 
     private void handleShowAnalyzeJob() {

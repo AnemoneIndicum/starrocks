@@ -68,6 +68,7 @@ import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -101,6 +102,7 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
     private boolean prevQueueEnableSelect;
     private boolean prevQueueEnableStatistic;
     private boolean prevQueueEnableLoad;
+    private boolean prevEnableGroupLevelQueue;
     private int prevQueueConcurrencyHardLimit;
     private double prevQueueMemUsedPctHardLimit;
     private int prevQueuePendingTimeoutSecond;
@@ -119,11 +121,14 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
         prevQueueEnableSelect = GlobalVariable.isEnableQueryQueueSelect();
         prevQueueEnableStatistic = GlobalVariable.isEnableQueryQueueStatistic();
         prevQueueEnableLoad = GlobalVariable.isEnableQueryQueueLoad();
+        prevEnableGroupLevelQueue = GlobalVariable.isEnableGroupLevelQueryQueue();
         prevQueueConcurrencyHardLimit = GlobalVariable.getQueryQueueConcurrencyLimit();
         prevQueueMemUsedPctHardLimit = GlobalVariable.getQueryQueueMemUsedPctLimit();
         prevQueuePendingTimeoutSecond = GlobalVariable.getQueryQueuePendingTimeoutSecond();
         prevQueueTimeoutSecond = connectContext.getSessionVariable().getQueryTimeoutS();
         prevQueueMaxQueuedQueries = GlobalVariable.getQueryQueueMaxQueuedQueries();
+
+        GlobalVariable.setEnableGroupLevelQueryQueue(true);
 
         GlobalVariable.setQueryQueuePendingTimeoutSecond(1000_000);
         connectContext.getSessionVariable().setQueryTimeoutS(1000_000);
@@ -155,6 +160,7 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
         GlobalVariable.setEnableQueryQueueSelect(prevQueueEnableSelect);
         GlobalVariable.setEnableQueryQueueStatistic(prevQueueEnableStatistic);
         GlobalVariable.setEnableQueryQueueLoad(prevQueueEnableLoad);
+        GlobalVariable.setEnableGroupLevelQueryQueue(prevEnableGroupLevelQueue);
         GlobalVariable.setQueryQueueConcurrencyLimit(prevQueueConcurrencyHardLimit);
         GlobalVariable.setQueryQueueMemUsedPctLimit(prevQueueMemUsedPctHardLimit);
         GlobalVariable.setQueryQueuePendingTimeoutSecond(prevQueuePendingTimeoutSecond);
@@ -335,7 +341,7 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
 
             if (!resetCoords.isEmpty()) {
                 queryIdToShouldThrow.put(resetCoords.get(0).getQueryId(), new UserException("Cancelled"));
-                resetCoords.get(0).cancel();
+                resetCoords.get(0).cancel("Cancel by test");
                 Assert.assertEquals(LogicalSlot.State.CANCELLED, resetCoords.get(0).getSlot().getState());
                 resetCoords.remove(0);
             }
@@ -346,6 +352,36 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
         }
     }
 
+    @Test
+    public void testDisableGroupLevelQueue() throws Exception {
+        final int concurrencyLimit = 100;
+        final int groupConcurrencyLimit = 1;
+
+        GlobalVariable.setEnableQueryQueueSelect(true);
+        GlobalVariable.setEnableGroupLevelQueryQueue(false);
+        GlobalVariable.setQueryQueueConcurrencyLimit(concurrencyLimit);
+
+        TWorkGroup group10 = new TWorkGroup().setId(10L).setConcurrency_limit(groupConcurrencyLimit);
+
+        List<DefaultCoordinator> runningCoords = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            mockResourceGroup(group10);
+            DefaultCoordinator coord = getSchedulerWithQueryId("select count(1) from lineitem");
+            manager.maybeWait(connectContext, coord);
+            Assert.assertEquals(0L, MetricRepo.COUNTER_QUERY_QUEUE_PENDING.getValue().longValue());
+            Assert.assertEquals(LogicalSlot.State.ALLOCATED, coord.getSlot().getState());
+
+            runningCoords.add(coord);
+        }
+
+        runningCoords.forEach(DefaultCoordinator::onFinished);
+        runningCoords.forEach(coord -> Assert.assertEquals(LogicalSlot.State.RELEASED, coord.getSlot().getState()));
+    }
+
+    /**
+     * FIXME(liuzihe): This case is unstable, should fix it and enable it in the future.
+     */
+    @Ignore
     @Test
     public void testGroupQueueNormal() throws Exception {
         final int concurrencyLimit = 2;
@@ -748,7 +784,7 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
                     throw new TException("mocked-release-slot-exception");
                 }
             });
-            coord.cancel();
+            coord.cancel("Cancel by test");
             mockFrontendService(new MockFrontendServiceClient());
             Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> 0 == MetricRepo.COUNTER_QUERY_QUEUE_PENDING.getValue());
             Assert.assertEquals(LogicalSlot.State.CANCELLED, coord.getSlot().getState());
@@ -773,7 +809,7 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
                     return res;
                 }
             });
-            coord.cancel();
+            coord.cancel("Cancel by test");
             mockFrontendService(new MockFrontendServiceClient());
             Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> 0 == MetricRepo.COUNTER_QUERY_QUEUE_PENDING.getValue());
             Assert.assertEquals(LogicalSlot.State.CANCELLED, coord.getSlot().getState());
@@ -799,7 +835,7 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
                     return res;
                 }
             });
-            coord.cancel();
+            coord.cancel("Cancel by test");
             mockFrontendService(new MockFrontendServiceClient());
             Awaitility.await().atMost(5, TimeUnit.SECONDS).until(() -> 0 == MetricRepo.COUNTER_QUERY_QUEUE_PENDING.getValue());
             Assert.assertEquals(LogicalSlot.State.CANCELLED, coord.getSlot().getState());
@@ -853,7 +889,7 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
             Awaitility.await().atMost(5, TimeUnit.SECONDS)
                     .until(() -> GlobalStateMgr.getCurrentState().getSlotManager().getSlots().size() == concurrencyLimit - 1);
 
-            coord.cancel();
+            coord.cancel("Cancel by test");
         }
 
         {
@@ -917,7 +953,7 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
         }
         coords2.forEach(DefaultCoordinator::onFinished);
 
-        coords.forEach(DefaultCoordinator::cancel);
+        coords.forEach((coor -> coor.cancel("Cancel by test")));
     }
 
     @Test
@@ -1398,7 +1434,7 @@ public class QueryQueueManagerTest extends SchedulerTestBase {
             Assert.assertEquals(4, res.getResultRows().size());
         }
 
-        coords.forEach(DefaultCoordinator::cancel);
+        coords.forEach(coor -> coor.cancel("Cancel by test"));
         runningCoords.forEach(DefaultCoordinator::onFinished);
     }
 

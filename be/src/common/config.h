@@ -49,6 +49,10 @@ CONF_Int32(brpc_port, "8060");
 // The number of bthreads for brpc, the default value is set to -1, which means the number of bthreads is #cpu-cores.
 CONF_Int32(brpc_num_threads, "-1");
 
+// The max number of single connections maintained by the brpc client and each server.
+// Theses connections are created during the first few access and will be used thereafter
+CONF_Int32(brpc_max_connections_per_server, "1");
+
 // Declare a selection strategy for those servers have many ips.
 // Note that there should at most one ip match this list.
 // this is a list in semicolon-delimited format, in CIDR notation, e.g. 10.10.10.0/24
@@ -82,7 +86,7 @@ CONF_Int32(heartbeat_service_thread_count, "1");
 // The count of thread to create table.
 CONF_Int32(create_tablet_worker_count, "3");
 // The count of thread to drop table.
-CONF_Int32(drop_tablet_worker_count, "3");
+CONF_mInt32(drop_tablet_worker_count, "3");
 // The count of thread to batch load.
 CONF_Int32(push_worker_count_normal_priority, "3");
 // The count of thread to high priority batch load.
@@ -117,7 +121,7 @@ CONF_Int32(upload_worker_count, "1");
 // The count of thread to download.
 CONF_Int32(download_worker_count, "1");
 // The count of thread to make snapshot.
-CONF_Int32(make_snapshot_worker_count, "5");
+CONF_mInt32(make_snapshot_worker_count, "5");
 // The count of thread to release snapshot.
 CONF_Int32(release_snapshot_worker_count, "5");
 // The interval time(seconds) for agent report tasks signatrue to FE.
@@ -351,6 +355,8 @@ CONF_Int64(load_data_reserve_hours, "4");
 CONF_mInt64(load_error_log_reserve_hours, "48");
 CONF_Int32(number_tablet_writer_threads, "16");
 CONF_mInt64(max_queueing_memtable_per_tablet, "2");
+// when memory limit exceed and memtable last update time exceed this time, memtable will be flushed
+CONF_mInt64(stale_memtable_flush_time_sec, "30");
 
 // delta writer hang after this time, be will exit since storage is in error state
 CONF_Int32(be_exit_after_disk_write_hang_second, "60");
@@ -362,6 +368,14 @@ CONF_Int32(be_exit_after_disk_write_hang_second, "60");
 CONF_Double(dictionary_encoding_ratio, "0.7");
 // The minimum chunk size for dictionary encoding speculation
 CONF_Int32(dictionary_speculate_min_chunk_size, "10000");
+
+// Whether to use special thread pool for streaming load to avoid deadlock for
+// concurrent streaming loads. The maximum number of threads and queue size are
+// set INT32_MAX which indicate there is no limit for the thread pool. Note you
+// don't need to change these configurations in general.
+CONF_mBool(enable_streaming_load_thread_pool, "true");
+CONF_Int32(streaming_load_thread_pool_num_min, "0");
+CONF_Int32(streaming_load_thread_pool_idle_time_ms, "2000");
 
 // The maximum amount of data that can be processed by a stream load
 CONF_mInt64(streaming_load_max_mb, "102400");
@@ -700,6 +714,8 @@ CONF_Int64(pipeline_scan_queue_mode, "0");
 CONF_Int64(pipeline_scan_queue_level_time_slice_base_ns, "100000000");
 CONF_Double(pipeline_scan_queue_ratio_of_adjacent_queue, "1.5");
 
+CONF_Int32(pipeline_analytic_max_buffer_size, "128");
+
 /// For parallel scan on the single tablet.
 // These three configs are used to calculate the minimum number of rows picked up from a segment at one time.
 // It is `splitted_scan_bytes/scan_row_bytes` and restricted in the range [min_splitted_scan_rows, max_splitted_scan_rows].
@@ -850,10 +866,10 @@ CONF_Int32(starlet_cache_dir_allocate_policy, "0");
 // Buffer size in starlet fs buffer stream, size <= 0 means not use buffer stream.
 // Only support in S3/HDFS currently.
 CONF_Int32(starlet_fs_stream_buffer_size_bytes, "131072");
+CONF_mBool(starlet_use_star_cache, "false");
 // TODO: support runtime change
-CONF_Bool(starlet_use_star_cache, "false");
 CONF_Int32(starlet_star_cache_mem_size_percent, "0");
-CONF_Int32(starlet_star_cache_disk_size_percent, "60");
+CONF_Int32(starlet_star_cache_disk_size_percent, "80");
 CONF_Int64(starlet_star_cache_disk_size_bytes, "0");
 CONF_Int32(starlet_star_cache_block_size_bytes, "1048576");
 // domain list separated by comma, e.g. '.example.com,.helloworld.com'
@@ -908,6 +924,10 @@ CONF_String(spill_local_storage_dir, "${STARROCKS_HOME}/spill");
 CONF_mBool(experimental_spill_skip_sync, "true");
 // spill Initial number of partitions
 CONF_mInt32(spill_init_partition, "16");
+// make sure 2^spill_max_partition_level < spill_max_partition_size
+CONF_Int32(spill_max_partition_level, "7");
+CONF_Int32(spill_max_partition_size, "1024");
+
 // The maximum size of a single log block container file, this is not a hard limit.
 // If the file size exceeds this limit, a new file will be created to store the block.
 CONF_Int64(spill_max_log_block_container_bytes, "10737418240"); // 10GB
@@ -938,29 +958,45 @@ CONF_Int64(max_length_for_to_base64, "200000");
 // Used by bitmap functions
 CONF_Int64(max_length_for_bitmap_function, "1000000");
 
+// Configuration items for datacache
+CONF_mBool(datacache_enable, "false");
+CONF_mString(datacache_mem_size, "10%");
+CONF_mString(datacache_disk_size, "0");
+CONF_mString(datacache_disk_path, "${STARROCKS_HOME}/datacache/");
+CONF_String(datacache_meta_path, "${STARROCKS_HOME}/datacache/");
+CONF_Int64(datacache_block_size, "262144"); // 256K
+CONF_Bool(datacache_checksum_enable, "false");
+CONF_Bool(datacache_direct_io_enable, "false");
+// Maximum number of concurrent inserts we allow globally for datacache.
+// 0 means unlimited.
+CONF_Int64(datacache_max_concurrent_inserts, "1500000");
+// Total memory limit for in-flight cache jobs.
+// Once this is reached, cache populcation will be rejected until the flying memory usage gets under the limit.
+CONF_Int64(datacache_max_flying_memory_mb, "256");
+// Whether to use datacache adaptor, which will skip reading cache when disk overload is high.
+CONF_Bool(datacache_adaptor_enable, "true");
+// A factor to control the io traffic between cache and network. The larger this parameter,
+// the more requests will be sent to the network.
+// Usually there is no need to modify it.
+CONF_Int64(datacache_skip_read_factor, "1");
+// DataCache engines, alternatives: cachelib, starcache.
+// Set the default value empty to indicate whether it is manully configured by users.
+// If not, we need to adjust the default engine based on build switches like "WITH_CACHELIB" and "WITH_STARCACHE".
+CONF_String(datacache_engine, "");
+
+// The following configurations will be deprecated, and we use the `datacache` prefix instead.
+// But it is temporarily necessary to keep them for a period of time to be compatible with
+// the old configuration files.
 CONF_Bool(block_cache_enable, "false");
 CONF_Int64(block_cache_disk_size, "0");
 CONF_String(block_cache_disk_path, "${STARROCKS_HOME}/block_cache/");
 CONF_String(block_cache_meta_path, "${STARROCKS_HOME}/block_cache/");
 CONF_Int64(block_cache_block_size, "262144");   // 256K
 CONF_Int64(block_cache_mem_size, "2147483648"); // 2GB
-CONF_Bool(block_cache_checksum_enable, "false");
-// Maximum number of concurrent inserts we allow globally for block cache.
-// 0 means unlimited.
 CONF_Int64(block_cache_max_concurrent_inserts, "1500000");
-// Total memory limit for in-flight parcels.
-// Once this is reached, requests will be rejected until the parcel memory usage gets under the limit.
-CONF_Int64(block_cache_max_parcel_memory_mb, "256");
-CONF_Bool(block_cache_report_stats, "false");
-// This essentially turns the LRU into a two-segmented LRU. Setting this to 1 means every new insertion
-// will be inserted 1/2 from the end of the LRU, 2 means 1/4 from the end of the LRU, and so on.
-// It is only useful for the cachelib engine currently.
-CONF_Int64(block_cache_lru_insertion_point, "1");
-// Block cache engines, alternatives: cachelib, starcache.
-// Set the default value empty to indicate whether it is manully configured by users.
-// If not, we need to adjust the default engine based on build switches like "WITH_CACHELIB" and "WITH_STARCACHE".
-CONF_String(block_cache_engine, "");
+CONF_Bool(block_cache_checksum_enable, "false");
 CONF_Bool(block_cache_direct_io_enable, "false");
+CONF_String(block_cache_engine, "");
 
 CONF_mInt64(l0_l1_merge_ratio, "10");
 CONF_mInt64(l0_max_file_size, "209715200"); // 200MB
@@ -1056,5 +1092,13 @@ CONF_mInt32(get_txn_status_internal_sec, "30");
 CONF_mBool(dump_metrics_with_bvar, "true");
 
 CONF_mBool(enable_drop_tablet_if_unfinished_txn, "true");
+
+// 0 means no limit
+CONF_Int32(lake_service_max_concurrency, "0");
+
+CONF_mInt64(lake_vacuum_min_batch_delete_size, "1000");
+
+// TOPN RuntimeFilter parameters
+CONF_mInt32(desc_hint_split_range, "10");
 
 } // namespace starrocks::config

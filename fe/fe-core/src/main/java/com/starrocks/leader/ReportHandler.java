@@ -34,13 +34,16 @@
 
 package com.starrocks.leader;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.HashBasedTable;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Queues;
 import com.google.common.collect.Sets;
+import com.google.common.collect.Table;
 import com.starrocks.binlog.BinlogConfig;
 import com.starrocks.catalog.ColocateTableIndex;
 import com.starrocks.catalog.Database;
@@ -80,6 +83,7 @@ import com.starrocks.task.AgentTaskExecutor;
 import com.starrocks.task.AgentTaskQueue;
 import com.starrocks.task.ClearTransactionTask;
 import com.starrocks.task.CreateReplicaTask;
+import com.starrocks.task.CreateReplicaTask.RecoverySource;
 import com.starrocks.task.DropReplicaTask;
 import com.starrocks.task.LeaderTask;
 import com.starrocks.task.PublishVersionTask;
@@ -94,7 +98,6 @@ import com.starrocks.thrift.TResourceUsage;
 import com.starrocks.thrift.TStatus;
 import com.starrocks.thrift.TStatusCode;
 import com.starrocks.thrift.TStorageMedium;
-import com.starrocks.thrift.TStorageType;
 import com.starrocks.thrift.TTablet;
 import com.starrocks.thrift.TTabletInfo;
 import com.starrocks.thrift.TTabletMetaType;
@@ -136,6 +139,19 @@ public class ReportHandler extends Daemon {
     private BlockingQueue<Pair<Long, ReportType>> reportQueue = Queues.newLinkedBlockingQueue();
 
     private Map<ReportType, Map<Long, ReportTask>> pendingTaskMap = Maps.newHashMap();
+
+    /**
+     * Record the mapping of <tablet id, backend id> to the to be dropped time of tablet.
+     * We will delay the drop of tablet based on configuration `tablet_report_drop_tablet_delay_sec`
+     * if we don't find the meta of the tablet in FE.
+     * <p>
+     * There's no concurrency here since it will only be used by a single thread of ReportHandler, so
+     * we don't need lock protection.
+     * <p>
+     * And because the tablet drop only relies on some runtime state, if the map is lost after restart,
+     * the drop can retry. So we don't need to persist this map either.
+     */
+    private static final Table<Long, Long, Long> TABLET_TO_DROP_TIME = HashBasedTable.create();
 
     public ReportHandler() {
         super("ReportHandler");
@@ -795,17 +811,19 @@ public class ReportHandler extends Daemon {
                                     double bfFpp = olapTable.getBfFpp();
                                     CreateReplicaTask createReplicaTask = new CreateReplicaTask(backendId, dbId,
                                             tableId, partitionId, indexId, tabletId, indexMeta.getShortKeyColumnCount(),
-                                            indexMeta.getSchemaHash(), partition.getVisibleVersion(),
+                                            indexMeta.getSchemaHash(), indexMeta.getSchemaVersion(),
+                                            partition.getVisibleVersion(),
                                             indexMeta.getKeysType(),
-                                            TStorageType.COLUMN,
+                                            olapTable.getStorageType(),
                                             TStorageMedium.HDD, indexMeta.getSchema(), bfColumns, bfFpp, null,
                                             olapTable.getCopiedIndexes(),
                                             olapTable.isInMemory(),
                                             olapTable.enablePersistentIndex(),
                                             olapTable.primaryIndexCacheExpireSec(),
                                             olapTable.getPartitionInfo().getTabletType(partitionId),
-                                            olapTable.getCompressionType(), indexMeta.getSortKeyIdxes());
-                                    createReplicaTask.setIsRecoverTask(true);
+                                            olapTable.getCompressionType(), indexMeta.getSortKeyIdxes(),
+                                            indexMeta.getSortKeyUniqueIds());
+                                    createReplicaTask.setRecoverySource(RecoverySource.REPORT);
                                     createReplicaBatchTask.addTask(createReplicaTask);
                                 } else {
                                     // just set this replica as bad
@@ -881,6 +899,25 @@ public class ReportHandler extends Daemon {
                 tabletId, backendId, reason);
     }
 
+    @VisibleForTesting
+    public static boolean checkReadyToBeDropped(long tabletId, long backendId) {
+        Long time = TABLET_TO_DROP_TIME.get(tabletId, backendId);
+        long currentTimeMs = System.currentTimeMillis();
+        if (time == null) {
+            TABLET_TO_DROP_TIME.put(tabletId, backendId,
+                    currentTimeMs + Config.tablet_report_drop_tablet_delay_sec * 1000);
+        } else {
+            boolean ready = currentTimeMs > time;
+            if (ready) {
+                // clean the map
+                TABLET_TO_DROP_TIME.remove(tabletId, backendId);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static void deleteFromBackend(Map<Long, TTablet> backendTablets,
                                           Set<Long> foundTabletsWithValidSchema,
                                           Map<Long, TTabletInfo> foundTabletsWithInvalidSchema,
@@ -893,6 +930,9 @@ public class ReportHandler extends Daemon {
         for (Long tabletId : backendTablets.keySet()) {
             TabletMeta tabletMeta = invertedIndex.getTabletMeta(tabletId);
             if (tabletMeta == null && maxTaskSendPerBe > 0) {
+                if (!checkReadyToBeDropped(tabletId, backendId)) {
+                    continue;
+                }
                 // We need to clean these ghost tablets from current backend, or else it will
                 // continue to report them to FE forever and add some processing overhead(the tablet report
                 // process is protected with DB S lock).

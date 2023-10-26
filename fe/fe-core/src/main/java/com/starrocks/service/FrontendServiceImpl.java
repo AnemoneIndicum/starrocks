@@ -143,6 +143,9 @@ import com.starrocks.sql.analyzer.AnalyzerUtils;
 import com.starrocks.sql.analyzer.Authorizer;
 import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.ast.AddPartitionClause;
+import com.starrocks.sql.ast.ListPartitionDesc;
+import com.starrocks.sql.ast.PartitionDesc;
+import com.starrocks.sql.ast.RangePartitionDesc;
 import com.starrocks.sql.ast.SetType;
 import com.starrocks.sql.ast.UserIdentity;
 import com.starrocks.sql.common.StarRocksPlannerException;
@@ -568,6 +571,11 @@ public class FrontendServiceImpl implements FrontendService.Iface {
             row.setPipe_name(pipe.getName());
             row.setDatabase_name(databaseName);
             row.setState(pipe.getState().toString());
+            row.setTable_name(Optional.ofNullable(pipe.getTargetTable()).map(TableName::toString).orElse(""));
+            row.setLast_error(pipe.getLastErrorInfo().toJson());
+            row.setCreated_time(pipe.getCreatedTime());
+
+            row.setLoad_status(pipe.getLoadStatus().toJson());
             row.setLoaded_files(pipe.getLoadStatus().loadedFiles);
             row.setLoaded_rows(pipe.getLoadStatus().loadRows);
             row.setLoaded_bytes(pipe.getLoadStatus().loadedBytes);
@@ -1093,6 +1101,8 @@ public class FrontendServiceImpl implements FrontendService.Iface {
             } else {
                 desc.setColumnKey("");
             }
+            desc.setDataType(column.getType().toMysqlDataTypeString());
+            desc.setColumnTypeStr(column.getType().toMysqlColumnTypeString());
             final TColumnDef colDef = new TColumnDef(desc);
             final String comment = column.getComment();
             if (comment != null) {
@@ -2027,16 +2037,21 @@ public class FrontendServiceImpl implements FrontendService.Iface {
                 continue;
             }
 
+            long mutablePartitionNum = 0;
             try {
                 db.readLock();
                 for (PhysicalPartition physicalPartition : partition.getSubPartitions()) {
                     if (physicalPartition.isImmutable()) {
                         continue;
                     }
+                    if (mutablePartitionNum >= 8) {
+                        continue;
+                    }
+                    ++mutablePartitionNum;
 
                     TOlapTablePartition tPartition = new TOlapTablePartition();
                     tPartition.setId(physicalPartition.getId());
-                    buildPartitions(physicalPartition, partitions, tPartition);
+                    buildPartitions(olapTable, physicalPartition, partitions, tPartition);
                     buildTablets(physicalPartition, tablets, olapTable);
                 }
             } finally {
@@ -2053,8 +2068,55 @@ public class FrontendServiceImpl implements FrontendService.Iface {
         return result;
     }
 
-    private static void buildPartitions(PhysicalPartition physicalPartition,
+    private static void buildPartitions(OlapTable olapTable, PhysicalPartition physicalPartition,
                                         List<TOlapTablePartition> partitions, TOlapTablePartition tPartition) {
+        PartitionInfo partitionInfo = olapTable.getPartitionInfo();
+        if (partitionInfo.isRangePartition()) {
+            RangePartitionInfo rangePartitionInfo = (RangePartitionInfo) olapTable.getPartitionInfo();
+            Range<PartitionKey> range = rangePartitionInfo.getRange(physicalPartition.getParentId());
+            int partColNum = rangePartitionInfo.getPartitionColumns().size();
+            // set start keys
+            if (range.hasLowerBound() && !range.lowerEndpoint().isMinValue()) {
+                for (int i = 0; i < partColNum; i++) {
+                    tPartition.addToStart_keys(
+                            range.lowerEndpoint().getKeys().get(i).treeToThrift().getNodes().get(0));
+                }
+            }
+            // set end keys
+            if (range.hasUpperBound() && !range.upperEndpoint().isMaxValue()) {
+                for (int i = 0; i < partColNum; i++) {
+                    tPartition.addToEnd_keys(
+                            range.upperEndpoint().getKeys().get(i).treeToThrift().getNodes().get(0));
+                }
+            }
+        } else if (partitionInfo instanceof ListPartitionInfo) {
+            ListPartitionInfo listPartitionInfo = (ListPartitionInfo) olapTable.getPartitionInfo();
+            List<List<TExprNode>> inKeysExprNodes = new ArrayList<>();
+
+            List<List<LiteralExpr>> multiValues = listPartitionInfo.getMultiLiteralExprValues().get(
+                    physicalPartition.getParentId());
+            if (multiValues != null && !multiValues.isEmpty()) {
+                inKeysExprNodes = multiValues.stream()
+                        .map(values -> values.stream()
+                                .map(value -> value.treeToThrift().getNodes().get(0))
+                                .collect(Collectors.toList()))
+                        .collect(Collectors.toList());
+                tPartition.setIn_keys(inKeysExprNodes);
+            }
+
+            List<LiteralExpr> values = listPartitionInfo.getLiteralExprValues().get(physicalPartition.getParentId());
+            if (values != null && !values.isEmpty()) {
+                inKeysExprNodes = values.stream()
+                        .map(value -> Lists.newArrayList(value).stream()
+                                .map(value1 -> value1.treeToThrift().getNodes().get(0))
+                                .collect(Collectors.toList()))
+                        .collect(Collectors.toList());
+            }
+
+            if (!inKeysExprNodes.isEmpty()) {
+                tPartition.setIn_keys(inKeysExprNodes);
+            }
+        }
         for (MaterializedIndex index : physicalPartition.getMaterializedIndices(MaterializedIndex.IndexExtState.ALL)) {
             tPartition.addToIndexes(new TOlapTableIndexTablets(index.getId(), Lists.newArrayList(
                     index.getTablets().stream().map(Tablet::getId).collect(Collectors.toList()))));
@@ -2162,10 +2224,22 @@ public class FrontendServiceImpl implements FrontendService.Iface {
             return result;
         }
 
-        Map<String, AddPartitionClause> addPartitionClauseMap;
+        AddPartitionClause addPartitionClause;
+        List<String> partitionColNames = Lists.newArrayList();
         try {
-            addPartitionClauseMap = AnalyzerUtils.getAddPartitionClauseFromPartitionValues(olapTable,
+            addPartitionClause = AnalyzerUtils.getAddPartitionClauseFromPartitionValues(olapTable,
                     request.partition_values);
+            PartitionDesc partitionDesc =  addPartitionClause.getPartitionDesc();
+            if (partitionDesc instanceof RangePartitionDesc) {
+                partitionColNames = ((RangePartitionDesc) partitionDesc).getPartitionColNames();
+            } else if (partitionDesc instanceof ListPartitionDesc) {
+                partitionColNames = ((ListPartitionDesc) partitionDesc).getPartitionColNames();
+            }
+            if (olapTable.getNumberOfPartitions() + partitionColNames.size() > Config.max_automatic_partition_number) {
+                throw new AnalysisException(" Automatically created partitions exceeded the maximum limit: " +
+                        Config.max_automatic_partition_number + ". You can modify this restriction on by setting" +
+                        " max_automatic_partition_number larger.");
+            }
         } catch (AnalysisException ex) {
             errorStatus.setError_msgs(Lists.newArrayList(ex.getMessage()));
             result.setStatus(errorStatus);
@@ -2173,27 +2247,23 @@ public class FrontendServiceImpl implements FrontendService.Iface {
         }
 
         GlobalStateMgr state = GlobalStateMgr.getCurrentState();
-        for (AddPartitionClause addPartitionClause : addPartitionClauseMap.values()) {
-            try {
-                if (olapTable.getNumberOfPartitions() > Config.max_automatic_partition_number) {
-                    throw new AnalysisException(" Automatically created partitions exceeded the maximum limit: " +
-                            Config.max_automatic_partition_number + ". You can modify this restriction on by setting" +
-                            " max_automatic_partition_number larger.");
-                }
-                state.addPartitions(db, olapTable.getName(), addPartitionClause);
-            } catch (Exception e) {
-                LOG.warn(e);
-                errorStatus.setError_msgs(Lists.newArrayList(
-                        String.format("automatic create partition failed. error:%s", e.getMessage())));
-                result.setStatus(errorStatus);
-                return result;
-            }
+
+        try {
+            state.addPartitions(db, olapTable.getName(), addPartitionClause);
+        } catch (Exception e) {
+            LOG.warn(e);
+            errorStatus.setError_msgs(Lists.newArrayList(
+                    String.format("automatic create partition failed. error:%s", e.getMessage())));
+            result.setStatus(errorStatus);
+            return result;
         }
+
 
         // build partition & tablets
         List<TOlapTablePartition> partitions = Lists.newArrayList();
         List<TTabletLocation> tablets = Lists.newArrayList();
-        for (String partitionName : addPartitionClauseMap.keySet()) {
+
+        for (String partitionName : partitionColNames) {
             Partition partition = table.getPartition(partitionName);
             TOlapTablePartition tPartition = new TOlapTablePartition();
             tPartition.setId(partition.getId());
@@ -2581,9 +2651,8 @@ public class FrontendServiceImpl implements FrontendService.Iface {
 
     @Override
     public TFinishSlotRequirementResponse finishSlotRequirement(TFinishSlotRequirementRequest request) throws TException {
-
         Status status = GlobalStateMgr.getCurrentState().getSlotProvider()
-                .finishSlotRequirement(request.getSlot_id(), new Status(request.getStatus()));
+                .finishSlotRequirement(request.getSlot_id(), request.getPipeline_dop(), new Status(request.getStatus()));
 
         TFinishSlotRequirementResponse res = new TFinishSlotRequirementResponse();
         res.setStatus(status.toThrift());
@@ -2631,8 +2700,8 @@ public class FrontendServiceImpl implements FrontendService.Iface {
         try {
             List<Long> allPartitions = dictTable.getAllPartitionIds();
             response.setPartition(
-                    OlapTableSink.createPartition(
-                            db.getId(), dictTable, dictTable.supportedAutomaticPartition(), allPartitions));
+                    OlapTableSink.createPartition(db.getId(), dictTable, tupleDescriptor, dictTable.supportedAutomaticPartition(),
+                    dictTable.getAutomaticBucketSize(), allPartitions));
             response.setLocation(OlapTableSink.createLocation(
                     dictTable, dictTable.getClusterId(), allPartitions, dictTable.enableReplicatedStorage()));
             response.setNodes_info(GlobalStateMgr.getCurrentState().createNodesInfo(dictTable.getClusterId()));

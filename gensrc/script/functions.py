@@ -319,6 +319,7 @@ vectorized_functions = [
      'StringFunctions::parse_url_prepare', 'StringFunctions::parse_url_close'],
     [30411, 'url_extract_parameter', 'VARCHAR', ['VARCHAR', 'VARCHAR'], 'StringFunctions::url_extract_parameter',
      'StringFunctions::url_extract_parameter_prepare', 'StringFunctions::url_extract_parameter_close'],
+    [30412, 'url_extract_host', 'VARCHAR', ['VARCHAR'], 'StringFunctions::url_extract_host'],
     [30420, 'strcmp', 'INT', ['VARCHAR', 'VARCHAR'], 'StringFunctions::strcmp'],
     [30421, 'url_encode', 'VARCHAR', ['VARCHAR'], 'StringFunctions::url_encode'],
     [30422, 'url_decode', 'VARCHAR', ['VARCHAR'], 'StringFunctions::url_decode'],
@@ -349,6 +350,8 @@ vectorized_functions = [
     [50030, 'quarter', 'INT', ['DATETIME'], 'TimeFunctions::quarter'],
     [50040, 'dayofweek', 'INT', ['DATETIME'], 'TimeFunctions::day_of_week'],
     [50041, 'dayofweek_iso', 'INT', ['DATETIME'], 'TimeFunctions::day_of_week_iso'],
+    [50042, 'yearweek', 'INT', ['DATETIME'], 'TimeFunctions::year_week_with_default_mode'],
+    [50043, 'yearweek', 'INT', ['DATETIME', 'INT'], 'TimeFunctions::year_week_with_mode'],
     [50050, 'to_date', 'DATE', ['DATETIME'], 'TimeFunctions::to_date'],
     [50051, 'date', 'DATE', ['DATETIME'], 'TimeFunctions::to_date'],
     [50052, 'to_tera_date', 'DATE', ['VARCHAR', 'VARCHAR'], 'TimeFunctions::to_tera_date', "TimeFunctions::to_tera_date_prepare", "TimeFunctions::to_tera_date_close"],
@@ -1013,4 +1016,7 @@ vectorized_functions = [
     # struct functions
     [170500, 'row', 'ANY_STRUCT', ['ANY_ELEMENT', "..."], 'StructFunctions::new_struct'],
     [170501, 'named_struct', 'ANY_STRUCT', ['ANY_ELEMENT', "..."], 'StructFunctions::named_struct'],
+
+    # user function
+    [180000, 'is_role_in_session', 'BOOLEAN', ['VARCHAR'], 'nullptr']
 ]

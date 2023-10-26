@@ -21,6 +21,7 @@
 #include "exprs/in_const_predicate.hpp"
 #include "exprs/literal.h"
 #include "exprs/runtime_filter.h"
+#include "exprs/runtime_filter_layout.h"
 #include "gen_cpp/RuntimeFilter_types.h"
 #include "gen_cpp/Types_types.h"
 #include "gutil/strings/substitute.h"
@@ -123,21 +124,20 @@ struct FilterIniter {
 
         if (column->is_nullable()) {
             auto* nullable_column = ColumnHelper::as_raw_column<NullableColumn>(column);
-            auto& data_array = ColumnHelper::as_raw_column<ColumnType>(nullable_column->data_column())->get_data();
+            const auto& data_array = GetContainer<ltype>().get_data(nullable_column->data_column().get());
             for (size_t j = column_offset; j < data_array.size(); j++) {
                 if (!nullable_column->is_null(j)) {
-                    filter->insert(&data_array[j]);
+                    filter->insert(data_array[j]);
                 } else {
                     if (eq_null) {
-                        filter->insert(nullptr);
+                        filter->insert_null();
                     }
                 }
             }
-
         } else {
-            auto& data_ptr = ColumnHelper::as_raw_column<ColumnType>(column)->get_data();
-            for (size_t j = column_offset; j < data_ptr.size(); j++) {
-                filter->insert(&data_ptr[j]);
+            const auto& data_array = GetContainer<ltype>().get_data(column.get());
+            for (size_t j = column_offset; j < data_array.size(); j++) {
+                filter->insert(data_array[j]);
             }
         }
         return nullptr;
@@ -205,12 +205,12 @@ Status RuntimeFilterBuildDescriptor::init(ObjectPool* pool, const TRuntimeFilter
     _filter_id = desc.filter_id;
     _build_expr_order = desc.expr_order;
     _has_remote_targets = desc.has_remote_targets;
-    _join_mode = desc.build_join_mode;
 
     if (desc.__isset.runtime_filter_merge_nodes) {
         _merge_nodes = desc.runtime_filter_merge_nodes;
     }
     _has_consumer = false;
+    _join_mode = desc.build_join_mode;
     if (desc.__isset.plan_node_id_to_target_expr && desc.plan_node_id_to_target_expr.size() != 0) {
         _has_consumer = true;
     }
@@ -226,7 +226,7 @@ Status RuntimeFilterBuildDescriptor::init(ObjectPool* pool, const TRuntimeFilter
     if (desc.__isset.broadcast_grf_destinations) {
         _broadcast_grf_destinations = desc.broadcast_grf_destinations;
     }
-
+    WithLayoutMixin::init(desc);
     RETURN_IF_ERROR(Expr::create_expr_tree(pool, desc.build_expr, &_build_expr_ctx, state));
     return Status::OK();
 }
@@ -250,9 +250,7 @@ Status RuntimeFilterProbeDescriptor::init(ObjectPool* pool, const TRuntimeFilter
         }
     }
 
-    if (desc.__isset.bucketseq_to_instance) {
-        _bucketseq_to_partition = desc.bucketseq_to_instance;
-    }
+    WithLayoutMixin::init(desc);
 
     if (desc.__isset.plan_node_id_to_partition_by_exprs) {
         const auto& it = const_cast<TRuntimeFilterDescription&>(desc).plan_node_id_to_partition_by_exprs.find(node_id);
@@ -405,7 +403,6 @@ void RuntimeFilterProbeCollector::do_evaluate(Chunk* chunk, RuntimeBloomFilterEv
         auto* ctx = rf_desc->probe_expr_ctx();
         ColumnPtr column = EVALUATE_NULL_IF_ERROR(ctx, ctx->root(), chunk);
         // for colocate grf
-        eval_context.running_context.bucketseq_to_partition = rf_desc->bucketseq_to_partition();
         compute_hash_values(chunk, column.get(), rf_desc, eval_context);
         filter->evaluate(column.get(), &eval_context.running_context);
 
@@ -465,15 +462,19 @@ void RuntimeFilterProbeCollector::compute_hash_values(Chunk* chunk, Column* colu
     if (filter->num_hash_partitions() == 0) {
         return;
     }
+
     if (rf_desc->partition_by_expr_contexts()->empty()) {
-        filter->compute_hash({column}, &eval_context.running_context);
+        filter->compute_partition_index(rf_desc->layout(), {column}, &eval_context.running_context);
     } else {
+        // Used to hold generated columns
+        std::vector<ColumnPtr> column_holders;
         std::vector<Column*> partition_by_columns;
         for (auto& partition_ctx : *(rf_desc->partition_by_expr_contexts())) {
             ColumnPtr partition_column = EVALUATE_NULL_IF_ERROR(partition_ctx, partition_ctx->root(), chunk);
             partition_by_columns.push_back(partition_column.get());
+            column_holders.emplace_back(std::move(partition_column));
         }
-        filter->compute_hash(partition_by_columns, &eval_context.running_context);
+        filter->compute_partition_index(rf_desc->layout(), partition_by_columns, &eval_context.running_context);
     }
 }
 
@@ -499,7 +500,6 @@ void RuntimeFilterProbeCollector::update_selectivity(Chunk* chunk, RuntimeBloomF
         auto ctx = rf_desc->probe_expr_ctx();
         ColumnPtr column = EVALUATE_NULL_IF_ERROR(ctx, ctx->root(), chunk);
         // for colocate grf
-        eval_context.running_context.bucketseq_to_partition = rf_desc->bucketseq_to_partition();
         compute_hash_values(chunk, column.get(), rf_desc, eval_context);
         // true count is not accummulated, it is evaluated for each RF respectively
         filter->evaluate(column.get(), &eval_context.running_context);

@@ -232,9 +232,17 @@ Status FragmentExecutor::_prepare_runtime_state(ExecEnv* exec_env, const Unified
     runtime_state->set_be_number(request.backend_num());
 
     // RuntimeFilterWorker::open_query is idempotent
-    if (params.__isset.runtime_filter_params && !params.runtime_filter_params.id_to_prober_params.empty()) {
+    const TRuntimeFilterParams* runtime_filter_params = nullptr;
+    if (request.unique().params.__isset.runtime_filter_params &&
+        !request.unique().params.runtime_filter_params.id_to_prober_params.empty()) {
+        runtime_filter_params = &request.unique().params.runtime_filter_params;
+    } else if (request.common().params.__isset.runtime_filter_params &&
+               !request.common().params.runtime_filter_params.id_to_prober_params.empty()) {
+        runtime_filter_params = &request.common().params.runtime_filter_params;
+    }
+    if (runtime_filter_params != nullptr) {
         _query_ctx->set_is_runtime_filter_coordinator(true);
-        exec_env->runtime_filter_worker()->open_query(query_id, query_options, params.runtime_filter_params, true);
+        exec_env->runtime_filter_worker()->open_query(query_id, query_options, *runtime_filter_params, true);
     }
     _fragment_ctx->prepare_pass_through_chunk_buffer();
 
@@ -707,7 +715,7 @@ Status FragmentExecutor::execute(ExecEnv* exec_env) {
 
     DCHECK(_fragment_ctx->enable_resource_group());
     auto* executor = exec_env->wg_driver_executor();
-    _fragment_ctx->iterate_drivers([executor, fragment_ctx = _fragment_ctx.get()](const DriverPtr& driver) {
+    (void)_fragment_ctx->iterate_drivers([executor, fragment_ctx = _fragment_ctx.get()](const DriverPtr& driver) {
         executor->submit(driver.get());
         return Status::OK();
     });

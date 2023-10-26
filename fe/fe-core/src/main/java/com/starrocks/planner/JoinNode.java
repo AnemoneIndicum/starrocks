@@ -90,6 +90,7 @@ public abstract class JoinNode extends PlanNode implements RuntimeFilterBuildNod
 
     // The partitionByExprs which need to check the probe side for partition join.
     protected List<Expr> probePartitionByExprs;
+    protected boolean canShuffleOutput = false;
 
     public List<RuntimeFilterDescription> getBuildRuntimeFilters() {
         return buildRuntimeFilters;
@@ -182,7 +183,7 @@ public abstract class JoinNode extends PlanNode implements RuntimeFilterBuildNod
             return;
         }
 
-        if (distrMode.equals(DistributionMode.PARTITIONED) || distrMode.equals(DistributionMode.LOCAL_HASH_BUCKET)) {
+        if (distrMode.equals(DistributionMode.PARTITIONED) || distrMode.equals(DistributionMode.SHUFFLE_HASH_BUCKET)) {
             // If it's partitioned join, and we can not get correct ndv
             // then it's hard to estimate right bloom filter size, or it's too big.
             // so we'd better to skip this global runtime filter.
@@ -384,6 +385,14 @@ public abstract class JoinNode extends PlanNode implements RuntimeFilterBuildNod
 
     public void setIsPushDown(boolean isPushDown) {
         this.isPushDown = isPushDown;
+    }
+
+    public boolean getCanShuffleOutput() {
+        return canShuffleOutput;
+    }
+
+    public void setCanShuffleOutput(boolean v) {
+        canShuffleOutput = v;
     }
 
     @Override

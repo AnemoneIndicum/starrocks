@@ -228,6 +228,7 @@ public class FunctionSet {
     public static final String APPROX_TOP_K = "approx_top_k";
     public static final String AVG = "avg";
     public static final String COUNT = "count";
+    public static final String COUNT_IF = "count_if";
     public static final String HLL_UNION_AGG = "hll_union_agg";
     public static final String MAX = "max";
     public static final String MAX_BY = "max_by";
@@ -455,6 +456,9 @@ public class FunctionSet {
     // dict query function
     public static final String DICT_MAPPING = "dict_mapping";
 
+    //user and role function
+    public static final String IS_ROLE_IN_SESSION = "is_role_in_session";
+
     public static final String QUARTERS_ADD = "quarters_add";
     public static final String QUARTERS_SUB = "quarters_sub";
     public static final String WEEKS_ADD = "weeks_add";
@@ -467,6 +471,20 @@ public class FunctionSet {
     public static final String SECONDS_SUB = "seconds_sub";
     public static final String MILLISECONDS_ADD = "milliseconds_add";
     public static final String MILLISECONDS_SUB = "milliseconds_sub";
+
+    public static final String CONNECTION_ID = "connection_id";
+
+    public static final String CATALOG = "catalog";
+
+    public static final String DATABASE = "database";
+
+    public static final String SCHEMA = "schema";
+
+    public static final String USER = "user";
+
+    public static final String CURRENT_USER = "current_user";
+
+    public static final String CURRENT_ROLE = "current_role";
 
     private static final Logger LOGGER = LogManager.getLogger(FunctionSet.class);
 
@@ -533,6 +551,7 @@ public class FunctionSet {
     public static final Set<String> alwaysReturnNonNullableFunctions =
             ImmutableSet.<String>builder()
                     .add(FunctionSet.COUNT)
+                    .add(FunctionSet.COUNT_IF)
                     .add(FunctionSet.MULTI_DISTINCT_COUNT)
                     .add(FunctionSet.NULL_OR_EMPTY)
                     .add(FunctionSet.HLL_HASH)
@@ -626,6 +645,16 @@ public class FunctionSet {
             .add(ARRAY_SLICE)
             .build();
 
+    public static final Set<String> INFORMATION_FUNCTIONS = ImmutableSet.<String>builder()
+            .add(CONNECTION_ID)
+            .add(CATALOG)
+            .add(DATABASE)
+            .add(SCHEMA)
+            .add(USER)
+            .add(CURRENT_USER)
+            .add(CURRENT_ROLE)
+            .build();
+
     public static final java.util.function.Function<Type, ArrayType> APPROX_TOP_N_RET_TYPE_BUILDER =
             (Type itemType) -> {
                 List<StructField> fields = Lists.newArrayList();
@@ -672,10 +701,12 @@ public class FunctionSet {
 
         // ifnull, nullif(DATE, DATETIME) should return datetime, not bigint
         // if(boolean, DATE, DATETIME) should return datetime
+        // coalesce(DATE, DATETIME) should return datetime
         int arg_index = 0;
         if (functionName.equalsIgnoreCase(IFNULL) ||
                 functionName.equalsIgnoreCase(NULLIF) ||
-                functionName.equalsIgnoreCase(IF)) {
+                functionName.equalsIgnoreCase(IF) ||
+                functionName.equalsIgnoreCase(COALESCE)) {
             if (functionName.equalsIgnoreCase(IF)) {
                 arg_index = 1;
             }
@@ -842,6 +873,9 @@ public class FunctionSet {
         // count(*)
         addBuiltin(AggregateFunction.createBuiltin(FunctionSet.COUNT,
                 new ArrayList<>(), Type.BIGINT, Type.BIGINT, false, true, true));
+
+        addBuiltin(AggregateFunction.createBuiltin(FunctionSet.COUNT_IF,
+                Lists.newArrayList(Type.BOOLEAN), Type.BIGINT, Type.BIGINT, true, true, true));
 
         // EXCHANGE_BYTES/_SPEED with various arguments
         addBuiltin(AggregateFunction.createBuiltin(EXCHANGE_BYTES,

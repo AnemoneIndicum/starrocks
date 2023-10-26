@@ -17,10 +17,14 @@
 #include <fmt/format.h>
 
 #include "gutil/strings/join.h"
+#include "storage/lake/lake_primary_index.h"
 #include "storage/lake/meta_file.h"
 #include "storage/lake/rowset.h"
 #include "storage/lake/tablet.h"
 #include "storage/lake/tablet_metadata.h"
+#include "storage/lake/update_manager.h"
+#include "testutil/sync_point.h"
+#include "util/dynamic_cache.h"
 #include "util/phmap/phmap_fwd_decl.h"
 #include "util/trace.h"
 
@@ -121,7 +125,7 @@ private:
             ASSIGN_OR_RETURN(_index_entry, _tablet.update_mgr()->prepare_primary_index(*_metadata, &_tablet, &_builder,
                                                                                        _base_version, _new_version));
         }
-        return _tablet.update_mgr()->publish_primary_compaction(op_compaction, *_metadata, &_tablet, _index_entry,
+        return _tablet.update_mgr()->publish_primary_compaction(op_compaction, *_metadata, _tablet, _index_entry,
                                                                 &_builder, _base_version);
     }
 
@@ -216,6 +220,7 @@ public:
 
 private:
     Status apply_write_log(const TxnLogPB_OpWrite& op_write) {
+        TEST_ERROR_POINT("NonPrimaryKeyTxnLogApplier::apply_write_log");
         if (op_write.has_rowset() && (op_write.rowset().num_rows() > 0 || op_write.rowset().has_delete_predicate())) {
             auto rowset = _metadata->add_rowsets();
             rowset->CopyFrom(op_write.rowset());
@@ -316,6 +321,7 @@ private:
     }
 
     Status apply_schema_change_log(const TxnLogPB_OpSchemaChange& op_schema_change) {
+        TEST_ERROR_POINT("NonPrimaryKeyTxnLogApplier::apply_schema_change_log");
         DCHECK_EQ(0, _metadata->rowsets_size());
         for (const auto& rowset : op_schema_change.rowsets()) {
             DCHECK(rowset.has_id());

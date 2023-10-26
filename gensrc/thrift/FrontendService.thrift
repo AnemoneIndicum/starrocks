@@ -78,6 +78,9 @@ struct TColumnDesc {
   23: optional string dbName
   24: optional string tableName
   25: optional string columnDefault
+  // Let FE control the type, which makes it easier to modify and display complex types
+  26: optional string columnTypeStr
+  27: optional string dataType
 }
 
 // A column definition; used by CREATE TABLE and DESCRIBE <table> statements. A column
@@ -409,6 +412,7 @@ struct TListPipesInfo {
 
     // schema info
     10: optional string database_name
+    11: optional string table_name
 
     // pipe status and statistics
     20: optional string state
@@ -417,6 +421,9 @@ struct TListPipesInfo {
     30: optional i64 loaded_files
     31: optional i64 loaded_rows
     32: optional i64 loaded_bytes
+    33: optional string load_status
+    34: optional string last_error
+    35: optional i64 created_time
 }
 
 struct TListPipesResult {
@@ -1422,6 +1429,9 @@ struct TResourceLogicalSlot {
     5: optional i64 expired_pending_time_ms
     6: optional i64 expired_allocated_time_ms
     7: optional i64 fe_start_time_ms
+
+    100: optional i32 num_fragments
+    101: optional i32 pipeline_dop
 }
 
 struct TRequireSlotRequest {
@@ -1435,6 +1445,8 @@ struct TRequireSlotResponse {
 struct TFinishSlotRequirementRequest {
     1: optional Status.TStatus status
     2: optional Types.TUniqueId slot_id
+
+    100: optional i32 pipeline_dop
 }
 
 struct TFinishSlotRequirementResponse {

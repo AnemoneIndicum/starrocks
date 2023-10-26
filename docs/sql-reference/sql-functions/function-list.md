@@ -270,6 +270,7 @@ You can find a function based on the following categories:
 - [json_keys](../sql-functions/json-functions/json-query-and-processing-functions/json_keys.md)
 - [json_query](../sql-functions/json-functions/json-query-and-processing-functions/json_query.md)
 - [json_string](../sql-functions/json-functions/json-query-and-processing-functions/json_string.md)
+- [to_json](../sql-functions/json-functions/json-query-and-processing-functions/to_json.md)
 
 ## String functions
 
@@ -384,8 +385,8 @@ You can find a function based on the following categories:
 
 - [like](../sql-functions/like_predicate-functions/like.md)
 - [regexp](../sql-functions/like_predicate-functions/regexp.md)
-- [regexp_extract](../sql-functions/string-functions/regexp_extract.md)
-- [regexp_replace](../sql-functions/string-functions/regexp_replace.md)
+- [regexp_extract](../sql-functions/like_predicate-functions/regexp_extract.md)
+- [regexp_replace](../sql-functions/like_predicate-functions/regexp_replace.md)
 
 ## Percentile functions
 
@@ -412,10 +413,10 @@ You can find a function based on the following categories:
 
 ## Utility functions
 
-- [catalog](./sql-reference/sql-functions/utility-functions/catalog.md)
+- [catalog](../sql-functions/utility-functions/catalog.md)
 - [current_role](../sql-functions/utility-functions/current_role.md)
 - [current_version](../sql-functions/utility-functions/current_version.md)
-- [database](./sql-reference/sql-functions/utility-functions/database.md)
+- [database](../sql-functions/utility-functions/database.md)
 - [host_name](../sql-functions/utility-functions/host_name.md)
 - [isnull](../sql-functions/utility-functions/isnull.md)
 - [isnotnull](../sql-functions/utility-functions/isnotnull.md)
