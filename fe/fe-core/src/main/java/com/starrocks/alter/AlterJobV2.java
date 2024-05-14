@@ -34,6 +34,7 @@
 
 package com.starrocks.alter;
 
+import com.google.common.collect.Sets;
 import com.google.gson.annotations.SerializedName;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.MaterializedIndexMeta;
@@ -44,8 +45,14 @@ import com.starrocks.common.Config;
 import com.starrocks.common.TraceManager;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
+import com.starrocks.common.util.concurrent.lock.LockType;
+import com.starrocks.common.util.concurrent.lock.Locker;
 import com.starrocks.persist.gson.GsonUtils;
+import com.starrocks.privilege.PrivilegeBuiltinConstants;
+import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.WarehouseManager;
+import com.starrocks.sql.ast.UserIdentity;
 import io.opentelemetry.api.trace.Span;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -104,6 +111,8 @@ public abstract class AlterJobV2 implements Writable {
     protected long finishedTimeMs = -1;
     @SerializedName(value = "timeoutMs")
     protected long timeoutMs = -1;
+    @SerializedName(value = "warehouseId")
+    protected long warehouseId = WarehouseManager.DEFAULT_WAREHOUSE_ID;
 
     protected Span span;
 
@@ -155,6 +164,10 @@ public abstract class AlterJobV2 implements Writable {
         return tableName;
     }
 
+    public long getTimeoutMs() {
+        return timeoutMs;
+    }
+
     public boolean isTimeout() {
         return System.currentTimeMillis() - createTimeMs > timeoutMs;
     }
@@ -175,6 +188,21 @@ public abstract class AlterJobV2 implements Writable {
         this.finishedTimeMs = finishedTimeMs;
     }
 
+    public void setWarehouseId(long warehouseId) {
+        this.warehouseId = warehouseId;
+    }
+
+    public void createConnectContextIfNeeded() {
+        if (ConnectContext.get() == null) {
+            ConnectContext context = new ConnectContext();
+            context.setGlobalStateMgr(GlobalStateMgr.getCurrentState());
+            context.setCurrentUserIdentity(UserIdentity.ROOT);
+            context.setCurrentRoleIds(Sets.newHashSet(PrivilegeBuiltinConstants.ROOT_ROLE_ID));
+            context.setQualifiedUser(UserIdentity.ROOT.getUser());
+            context.setThreadLocalInfo();
+        }
+    }
+
     /**
      * The keyword 'synchronized' only protects 2 methods:
      * run() and cancel()
@@ -190,6 +218,9 @@ public abstract class AlterJobV2 implements Writable {
             cancelImpl("Timeout");
             return;
         }
+
+        // create connectcontext
+        createConnectContextIfNeeded();
 
         try {
             while (true) {
@@ -232,20 +263,24 @@ public abstract class AlterJobV2 implements Writable {
     protected boolean checkTableStable(Database db) throws AlterCancelException {
         OlapTable tbl;
         long unHealthyTabletId = TabletInvertedIndex.NOT_EXIST_VALUE;
-        db.readLock();
+
+        Locker locker = new Locker();
+        locker.lockDatabase(db, LockType.READ);
         try {
             tbl = (OlapTable) db.getTable(tableId);
             if (tbl == null) {
                 throw new AlterCancelException("Table " + tableId + " does not exist");
             }
 
-            unHealthyTabletId = tbl.checkAndGetUnhealthyTablet(GlobalStateMgr.getCurrentSystemInfo(),
-                    GlobalStateMgr.getCurrentState().getTabletScheduler());
+            if (tbl.isOlapTable()) {
+                unHealthyTabletId = tbl.checkAndGetUnhealthyTablet(GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo(),
+                        GlobalStateMgr.getCurrentState().getTabletScheduler());
+            }
         } finally {
-            db.readUnlock();
+            locker.unLockDatabase(db, LockType.READ);
         }
 
-        db.writeLock();
+        locker.lockDatabase(db, LockType.WRITE);
         try {
             if (unHealthyTabletId != TabletInvertedIndex.NOT_EXIST_VALUE) {
                 errMsg = "table is unstable, unhealthy (or doing balance) tablet id: " + unHealthyTabletId;
@@ -259,7 +294,7 @@ public abstract class AlterJobV2 implements Writable {
                 return true;
             }
         } finally {
-            db.writeUnlock();
+            locker.unLockDatabase(db, LockType.WRITE);
         }
     }
 

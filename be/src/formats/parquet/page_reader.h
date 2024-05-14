@@ -14,9 +14,13 @@
 
 #pragma once
 
+#include <stddef.h>
+
 #include <cstdint>
+#include <string_view>
 
 #include "common/status.h"
+#include "common/statusor.h"
 #include "gen_cpp/parquet_types.h"
 #include "io/seekable_input_stream.h"
 
@@ -61,7 +65,11 @@ public:
 
     Status next_page() { return seek_to_offset(_next_header_pos); }
 
-    bool is_last_page() { return _num_values_read >= _num_values_total; }
+    bool is_last_page() { return _num_values_read >= _num_values_total || _next_read_page_idx >= _page_num; }
+
+    void set_page_num(size_t page_num) { _page_num = page_num; }
+
+    void set_next_read_page_idx(size_t cur_page_idx) { _next_read_page_idx = cur_page_idx; }
 
 private:
     io::SeekableInputStream* const _stream;
@@ -74,6 +82,9 @@ private:
     uint64_t _num_values_read = 0;
     const uint64_t _num_values_total = 0;
     HdfsScanStats* _stats;
+
+    size_t _page_num = 0xffffffff;
+    size_t _next_read_page_idx = 0;
 };
 
 } // namespace starrocks::parquet

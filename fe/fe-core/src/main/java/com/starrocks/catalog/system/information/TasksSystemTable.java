@@ -32,9 +32,11 @@ public class TasksSystemTable {
                         .column("TASK_NAME", ScalarType.createVarchar(64))
                         .column("CREATE_TIME", ScalarType.createType(PrimitiveType.DATETIME))
                         .column("SCHEDULE", ScalarType.createVarchar(64))
+                        .column("CATALOG", ScalarType.createVarchar(64))
                         .column("DATABASE", ScalarType.createVarchar(64))
                         .column("DEFINITION", ScalarType.createVarchar(MAX_FIELD_VARCHAR_LENGTH))
                         .column("EXPIRE_TIME", ScalarType.createType(PrimitiveType.DATETIME))
+                        .column("PROPERTIES", ScalarType.createVarcharType(MAX_FIELD_VARCHAR_LENGTH))
                         .build(), TSchemaTableType.SCH_TASKS);
     }
 }

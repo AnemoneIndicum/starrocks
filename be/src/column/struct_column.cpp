@@ -169,12 +169,12 @@ void StructColumn::append_selective(const Column& src, const uint32_t* indexes, 
     }
 }
 
-void StructColumn::append_value_multiple_times(const Column& src, uint32_t index, uint32_t size, bool deep_copy) {
+void StructColumn::append_value_multiple_times(const Column& src, uint32_t index, uint32_t size) {
     DCHECK(src.is_struct());
     const auto& src_column = down_cast<const StructColumn&>(src);
     DCHECK_EQ(_fields.size(), src_column._fields.size());
     for (size_t i = 0; i < _fields.size(); i++) {
-        _fields[i]->append_value_multiple_times(*src_column._fields[i], index, size, deep_copy);
+        _fields[i]->append_value_multiple_times(*src_column._fields[i], index, size);
     }
 }
 
@@ -353,7 +353,7 @@ int64_t StructColumn::xor_checksum(uint32_t from, uint32_t to) const {
     return xor_checksum;
 }
 
-void StructColumn::put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx) const {
+void StructColumn::put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx, bool is_binary_protocol) const {
     DCHECK_LT(idx, size());
     buf->begin_push_bracket();
     for (size_t i = 0; i < _fields.size(); ++i) {

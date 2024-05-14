@@ -48,7 +48,7 @@ TEST_F(VecBitmapFunctionsTest, bitmapEmptyTest) {
 
         auto* bitmap = ColumnHelper::get_const_value<TYPE_OBJECT>(column);
 
-        ASSERT_EQ(1, bitmap->getSizeInBytes());
+        ASSERT_EQ(1, bitmap->get_size_in_bytes());
     }
 }
 
@@ -2041,7 +2041,6 @@ TEST_F(VecBitmapFunctionsTest, bitmapToBase64Test) {
         Columns columns;
         auto s = BitmapColumn::create();
         BitmapValue empty;
-        empty.clear();
         s->append(&empty);
         columns.push_back(s);
 
@@ -2381,7 +2380,6 @@ TEST_F(VecBitmapFunctionsTest, sub_bitmap_special_cases) {
     {
         auto bitmap_column = BitmapColumn::create();
         BitmapValue empty;
-        empty.clear();
         bitmap_column->append(&empty);
 
         Columns columns;
@@ -2830,7 +2828,6 @@ TEST_F(VecBitmapFunctionsTest, sub_bitmap_limit_special_cases) {
     {
         auto bitmap_column = BitmapColumn::create();
         BitmapValue empty;
-        empty.clear();
         bitmap_column->append(&empty);
 
         Columns columns;
@@ -3299,7 +3296,6 @@ TEST_F(VecBitmapFunctionsTest, bitmap_subset_in_range_special_cases) {
     {
         auto bitmap_column = BitmapColumn::create();
         BitmapValue empty;
-        empty.clear();
         bitmap_column->append(&empty);
 
         Columns columns;

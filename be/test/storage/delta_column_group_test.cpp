@@ -25,8 +25,8 @@ TEST(TestDeltaColumnGroup, testLoad) {
     DeltaColumnGroup new_dcg;
     ASSERT_TRUE(new_dcg.load(100, pb_str.data(), pb_str.length()).ok());
     ASSERT_TRUE(dcg.column_files("111") == new_dcg.column_files("111"));
-    std::vector<std::vector<uint32_t>> v1 = dcg.column_ids();
-    std::vector<std::vector<uint32_t>> v2 = new_dcg.column_ids();
+    auto v1 = dcg.column_ids();
+    auto v2 = new_dcg.column_ids();
     ASSERT_TRUE(v1.size() == v2.size());
     for (int i = 0; i < v1.size(); ++i) {
         ASSERT_TRUE(v1[i].size() == v2[i].size());
@@ -66,16 +66,22 @@ TEST(TestDeltaColumnGroup, testGC) {
         // ...
         std::vector<std::pair<TabletSegmentId, int64_t>> garbage_dcgs;
         DeltaColumnGroupList dcgs;
-        for (uint32_t i = 1; i <= 20; i++) {
+        for (ColumnUID i = 1; i <= 20; i++) {
             DeltaColumnGroup dcg;
             dcg.init((int64_t)i, {{i, i + 1, i + 2}}, {"abc.cols"});
             dcgs.push_back(std::make_shared<DeltaColumnGroup>(dcg));
         }
-        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 10, garbage_dcgs);
+        const std::string path = "/asd/";
+        std::vector<std::string> clear_files;
+        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 10, path, &garbage_dcgs,
+                                                       &clear_files);
         ASSERT_TRUE(dcgs.size() == 20);
+        ASSERT_TRUE(clear_files.size() == 0);
         ASSERT_TRUE(garbage_dcgs.size() == 0);
-        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 20, garbage_dcgs);
+        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 20, path, &garbage_dcgs,
+                                                       &clear_files);
         ASSERT_TRUE(dcgs.size() == 20);
+        ASSERT_TRUE(clear_files.size() == 0);
         ASSERT_TRUE(garbage_dcgs.size() == 0);
     };
     // test2
@@ -91,11 +97,17 @@ TEST(TestDeltaColumnGroup, testGC) {
             dcg.init((int64_t)i, {{1, 2, 3}}, {"abc.cols"});
             dcgs.push_back(std::make_shared<DeltaColumnGroup>(dcg));
         }
-        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 10, garbage_dcgs);
+        const std::string path = "/asd/";
+        std::vector<std::string> clear_files;
+        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 10, path, &garbage_dcgs,
+                                                       &clear_files);
         ASSERT_TRUE(dcgs.size() == 11);
+        ASSERT_TRUE(clear_files.size() == 9);
         ASSERT_TRUE(garbage_dcgs.size() == 9);
-        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 20, garbage_dcgs);
+        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 20, path, &garbage_dcgs,
+                                                       &clear_files);
         ASSERT_TRUE(dcgs.size() == 1);
+        ASSERT_TRUE(clear_files.size() == 19);
         ASSERT_TRUE(garbage_dcgs.size() == 19);
     };
     // test3
@@ -106,18 +118,24 @@ TEST(TestDeltaColumnGroup, testGC) {
         // ...
         std::vector<std::pair<TabletSegmentId, int64_t>> garbage_dcgs;
         DeltaColumnGroupList dcgs;
-        for (uint32_t i = 1; i <= 20; i++) {
+        for (ColumnUID i = 1; i <= 20; i++) {
             DeltaColumnGroup dcg;
-            uint32_t shift = i % 2;
+            ColumnUID shift = i % 2;
             dcg.init((int64_t)i, {{1 + shift, 2 + shift, 3 + shift}}, {"abc.cols"});
             dcgs.push_back(std::make_shared<DeltaColumnGroup>(dcg));
         }
-        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 10, garbage_dcgs);
+        const std::string path = "/asd/";
+        std::vector<std::string> clear_files;
+        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 10, path, &garbage_dcgs,
+                                                       &clear_files);
         ASSERT_TRUE(dcgs.size() == 12);
         ASSERT_TRUE(garbage_dcgs.size() == 8);
-        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 20, garbage_dcgs);
+        ASSERT_TRUE(clear_files.size() == 8);
+        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 20, path, &garbage_dcgs,
+                                                       &clear_files);
         ASSERT_TRUE(dcgs.size() == 2);
         ASSERT_TRUE(garbage_dcgs.size() == 18);
+        ASSERT_TRUE(clear_files.size() == 18);
     };
     // test4
     {
@@ -128,18 +146,24 @@ TEST(TestDeltaColumnGroup, testGC) {
         // ...
         std::vector<std::pair<TabletSegmentId, int64_t>> garbage_dcgs;
         DeltaColumnGroupList dcgs;
-        for (uint32_t i = 1; i <= 20; i++) {
+        for (ColumnUID i = 1; i <= 20; i++) {
             DeltaColumnGroup dcg;
-            uint32_t shift = i % 3;
+            ColumnUID shift = i % 3;
             dcg.init((int64_t)i, {{1 + shift, 2 + shift, 3 + shift}}, {"abc.cols"});
             dcgs.push_back(std::make_shared<DeltaColumnGroup>(dcg));
         }
-        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 10, garbage_dcgs);
+        const std::string path = "/asd/";
+        std::vector<std::string> clear_files;
+        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 10, path, &garbage_dcgs,
+                                                       &clear_files);
         ASSERT_TRUE(dcgs.size() == 13);
         ASSERT_TRUE(garbage_dcgs.size() == 7);
-        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 20, garbage_dcgs);
+        ASSERT_TRUE(clear_files.size() == 7);
+        DeltaColumnGroupListHelper::garbage_collection(dcgs, TabletSegmentId(100, 100), 20, path, &garbage_dcgs,
+                                                       &clear_files);
         ASSERT_TRUE(dcgs.size() == 3);
         ASSERT_TRUE(garbage_dcgs.size() == 17);
+        ASSERT_TRUE(clear_files.size() == 17);
     };
 };
 

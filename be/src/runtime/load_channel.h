@@ -64,6 +64,7 @@ class TabletsChannel;
 class LoadChannel;
 class LoadChannelMgr;
 class OlapTableSchemaParam;
+class RuntimeProfile;
 
 namespace lake {
 class TabletManager;
@@ -75,12 +76,14 @@ class LoadChannel {
     using LakeTabletManager = lake::TabletManager;
 
 public:
-    LoadChannel(LoadChannelMgr* mgr, LakeTabletManager* lake_tablet_mgr, const UniqueId& load_id,
+    LoadChannel(LoadChannelMgr* mgr, LakeTabletManager* lake_tablet_mgr, const UniqueId& load_id, int64_t txn_id,
                 const std::string& txn_trace_parent, int64_t timeout_s, std::unique_ptr<MemTracker> mem_tracker);
 
     ~LoadChannel();
 
     DISALLOW_COPY_AND_MOVE(LoadChannel);
+
+    void set_profile_config(const PLoadChannelProfileConfig& config);
 
     // Open a new load channel if it does not exist.
     // NOTE: This method may be called multiple times, and each time with a different |request|.
@@ -104,6 +107,8 @@ public:
 
     const UniqueId& load_id() const { return _load_id; }
 
+    int64_t txn_id() const { return _txn_id; }
+
     int64_t timeout() const { return _timeout_s; }
 
     std::shared_ptr<TabletsChannel> get_tablets_channel(int64_t index_id);
@@ -114,6 +119,8 @@ public:
 
     Span get_span() { return _span; }
 
+    void report_profile(PTabletWriterAddBatchResult* result, bool print_profile);
+
 private:
     void _add_chunk(Chunk* chunk, const PTabletWriterAddChunkRequest& request, PTabletWriterAddBatchResult* response);
     Status _build_chunk_meta(const ChunkPB& pb_chunk);
@@ -122,6 +129,7 @@ private:
     LoadChannelMgr* _load_mgr;
     LakeTabletManager* _lake_tablet_mgr;
     UniqueId _load_id;
+    int64_t _txn_id;
     int64_t _timeout_s;
     std::atomic<bool> _has_chunk_meta;
     mutable bthread::Mutex _chunk_meta_lock;
@@ -132,14 +140,31 @@ private:
     std::unique_ptr<MemTracker> _mem_tracker;
     std::atomic<time_t> _last_updated_time;
 
+    // Put profile before _tablets_channels to avoid TabletsChannel use profile in destructor
+    // The root profile named "LoadChannel"
+    std::shared_ptr<RuntimeProfile> _root_profile;
+    // The profile named "Channel" for each BE
+    RuntimeProfile* _profile;
+
     // lock protect the tablets channel map
     bthread::Mutex _lock;
     // index id -> tablets channel
     std::unordered_map<int64_t, std::shared_ptr<TabletsChannel>> _tablets_channels;
+    std::atomic<bool> _closed{false};
 
     Span _span;
     size_t _num_chunk{0};
     size_t _num_segment = 0;
+
+    int64_t _create_time_ns;
+    bool _enable_profile{false};
+    int64_t _big_query_profile_threshold_ns{-1};
+    int64_t _runtime_profile_report_interval_ns = std::numeric_limits<int64_t>::max();
+    std::atomic<int64_t> _last_report_time_ns{0};
+    std::atomic<bool> _final_report{false};
+
+    RuntimeProfile::Counter* _index_num = nullptr;
+    RuntimeProfile::Counter* _peak_memory_usage = nullptr;
 };
 
 inline std::ostream& operator<<(std::ostream& os, const LoadChannel& load_channel) {

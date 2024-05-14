@@ -39,6 +39,21 @@ bool RowStoreEncoder::is_field_supported(const Field& f) {
     case TYPE_VARCHAR:
     case TYPE_DATE:
     case TYPE_DATETIME:
+    case TYPE_CHAR:
+    case TYPE_DECIMAL32:
+    case TYPE_DECIMAL64:
+    case TYPE_DECIMAL128:
+    case TYPE_TIME:
+    case TYPE_DECIMALV2:
+    case TYPE_FLOAT:
+    case TYPE_DOUBLE:
+    case TYPE_JSON:
+    case TYPE_HLL:
+    case TYPE_OBJECT:
+    case TYPE_PERCENTILE:
+    case TYPE_ARRAY:
+    case TYPE_STRUCT:
+    case TYPE_MAP:
         return true;
     default:
         return false;

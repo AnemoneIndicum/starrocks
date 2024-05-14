@@ -70,6 +70,7 @@ size_t ArrayColumn::byte_size(size_t idx) const {
 }
 
 void ArrayColumn::reserve(size_t n) {
+    _elements->reserve(n);
     _offsets->reserve(n + 1);
 }
 
@@ -125,7 +126,7 @@ void ArrayColumn::append_selective(const Column& src, const uint32_t* indexes, u
 }
 
 // TODO(fzh): directly copy elements for un-nested arrays
-void ArrayColumn::append_value_multiple_times(const Column& src, uint32_t index, uint32_t size, bool deep_copy) {
+void ArrayColumn::append_value_multiple_times(const Column& src, uint32_t index, uint32_t size) {
     for (uint32_t i = 0; i < size; i++) {
         append(src, index, 1);
     }
@@ -437,7 +438,8 @@ void ArrayColumn::compare_column(const Column& rhs_column, std::vector<int8_t>* 
     size_t rows = size();
     output->resize(rows);
     for (size_t i = 0; i < rows; i++) {
-        (*output)[i] = static_cast<int8_t>(compare_at(i, i, rhs_column, 1));
+        int res = compare_at(i, i, rhs_column, 1);
+        (*output)[i] = (res > 0) - (res < 0);
     }
 }
 
@@ -496,7 +498,7 @@ int64_t ArrayColumn::xor_checksum(uint32_t from, uint32_t to) const {
     return (xor_checksum ^ _elements->xor_checksum(element_from, element_to));
 }
 
-void ArrayColumn::put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx) const {
+void ArrayColumn::put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx, bool is_binary_protocol) const {
     DCHECK_LT(idx, size());
     const size_t offset = _offsets->get_data()[idx];
     const size_t array_size = _offsets->get_data()[idx + 1] - offset;

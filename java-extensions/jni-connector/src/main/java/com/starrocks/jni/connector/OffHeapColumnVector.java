@@ -20,6 +20,8 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -211,6 +213,12 @@ public class OffHeapColumnVector {
             putArrayOffset(elementsAppended, offset, 0);
         }
 
+        if (type.isStruct()) {
+            for (int i = 0; i < childColumns.length; i++) {
+                childColumns[i].appendValue(null);
+            }
+        }
+
         return elementsAppended++;
     }
 
@@ -363,7 +371,7 @@ public class OffHeapColumnVector {
 
     public int appendString(String str) {
         byte[] bytes = str.getBytes(StandardCharsets.UTF_8);
-        return appendByteArray(bytes, 0, str.length());
+        return appendByteArray(bytes, 0, bytes.length);
     }
 
     public int appendBinary(byte[] binary) {
@@ -440,6 +448,19 @@ public class OffHeapColumnVector {
         return elementsAppended++;
     }
 
+    public int appendDate(LocalDate v) {
+        reserve(elementsAppended + 1);
+        int date = convertToDate(v.getYear(), v.getMonthValue(), v.getDayOfMonth());
+        return appendInt(date);
+    }
+
+    public int appendDateTime(LocalDateTime v) {
+        reserve(elementsAppended + 1);
+        long datetime = convertToDateTime(v.getYear(), v.getMonthValue(), v.getDayOfMonth(), v.getHour(),
+                v.getMinute(), v.getSecond(), v.getNano() / 1000);
+        return appendLong(datetime);
+    }
+
     public void updateMeta(OffHeapColumnVector meta) {
         if (type.isUnknown()) {
             meta.appendLong(0);
@@ -465,13 +486,6 @@ public class OffHeapColumnVector {
         ColumnType.TypeValue typeValue = type.getTypeValue();
         if (o == null) {
             appendNull();
-            if (type.isStruct()) {
-                List<ColumnValue> nulls = new ArrayList<>();
-                for (int i = 0; i < type.childTypes.size(); i++) {
-                    nulls.add(null);
-                }
-                appendStruct(nulls);
-            }
             return;
         }
 
@@ -501,8 +515,10 @@ public class OffHeapColumnVector {
                 appendBinary(o.getBytes());
                 break;
             case STRING:
-            case DATE:
                 appendString(o.getString(typeValue));
+                break;
+            case DATE:
+                appendDate(o.getDate());
                 break;
             case DECIMALV2:
             case DECIMAL32:
@@ -513,7 +529,7 @@ public class OffHeapColumnVector {
             case DATETIME:
             case DATETIME_MICROS:
             case DATETIME_MILLIS:
-                appendString(o.getTimestamp(typeValue));
+                appendDateTime(o.getDateTime(typeValue));
                 break;
             case ARRAY: {
                 List<ColumnValue> values = new ArrayList<>();
@@ -681,6 +697,14 @@ public class OffHeapColumnVector {
             }
             for (OffHeapColumnVector c : childColumns) {
                 c.checkMeta(checker);
+                if (type.isStruct()) {
+                    if (numNulls != c.numNulls || elementsAppended != c.elementsAppended) {
+                        throw new RuntimeException(
+                                "struct type check failed, root numNulls=" + numNulls + ", elementsAppended=" +
+                                elementsAppended + "; however, child " + c.type.name + " numNulls=" + c.numNulls +
+                                ", elementsAppended=" + c.elementsAppended);
+                    }
+                }
             }
         } else {
             checker.check(context + "#data", data);
@@ -695,5 +719,41 @@ public class OffHeapColumnVector {
             bytes[length - 1 - i] = temp;
         }
         return bytes;
+    }
+
+    /**
+     * logical components in be: time_types.cpp, date::from_date
+     */
+    private int convertToDate(int year, int month, int day) {
+        int century;
+        int julianDate;
+
+        if (month > 2) {
+            month += 1;
+            year += 4800;
+        } else {
+            month += 13;
+            year += 4799;
+        }
+        century = year / 100;
+        julianDate = year * 365 - 32167;
+        julianDate += year / 4 - century + century / 4;
+        julianDate += 7834 * month / 256 + day;
+
+        return julianDate;
+    }
+
+    /**
+     * logical components in be: time_types.h, timestamp::from_datetime
+     */
+    private long convertToDateTime(int year, int month, int day, int hour, int minute, int second, int microsecond) {
+        int secsPerMinute = 60;
+        int minsPerHour = 60;
+        long usecsPerSec = 1000000;
+        int timeStampBits = 40;
+        long julianDate = convertToDate(year, month, day);
+        long timestamp = (((((hour * minsPerHour) + minute) * secsPerMinute) + second) * usecsPerSec)
+                + microsecond;
+        return julianDate << timeStampBits | timestamp;
     }
 }

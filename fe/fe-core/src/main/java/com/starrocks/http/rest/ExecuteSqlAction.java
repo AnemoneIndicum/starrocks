@@ -37,9 +37,9 @@ import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import com.starrocks.analysis.StringLiteral;
-import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.common.Config;
 import com.starrocks.common.DdlException;
+import com.starrocks.common.Pair;
 import com.starrocks.common.StarRocksHttpException;
 import com.starrocks.common.ThreadPoolManager;
 import com.starrocks.common.util.LogUtil;
@@ -49,6 +49,7 @@ import com.starrocks.http.BaseResponse;
 import com.starrocks.http.HttpConnectContext;
 import com.starrocks.http.HttpConnectProcessor;
 import com.starrocks.http.IllegalArgException;
+import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.ConnectScheduler;
 import com.starrocks.qe.OriginStatement;
 import com.starrocks.qe.QueryState;
@@ -145,6 +146,8 @@ public class ExecuteSqlAction extends RestBaseAction {
             } catch (Exception e) {
                 // just for safe. most Exception is handled in execute(), and set error code in context
                 throw new StarRocksHttpException(HttpResponseStatus.INTERNAL_SERVER_ERROR, e.getMessage());
+            } finally {
+                ConnectContext.remove();
             }
 
             // finalize just send 200 for kill, and throw StarRocksHttpException if context's error is set
@@ -164,14 +167,10 @@ public class ExecuteSqlAction extends RestBaseAction {
 
     private void changeCatalogAndDB(String catalogName, String databaseName, HttpConnectContext context)
             throws StarRocksHttpException {
-        if (!catalogName.equals(InternalCatalog.DEFAULT_INTERNAL_CATALOG_NAME)) {
-            throw new StarRocksHttpException(HttpResponseStatus.BAD_REQUEST, "only support default_catalog right now");
-        }
-
         try {
-            context.getGlobalStateMgr().changeCatalog(context, catalogName);
+            context.changeCatalog(catalogName);
             if (databaseName != null) {
-                context.getGlobalStateMgr().changeCatalogDb(context, databaseName);
+                context.changeCatalogDb(databaseName);
             }
         } catch (Exception e) {
             // 403 Forbidden DdlException
@@ -239,9 +238,9 @@ public class ExecuteSqlAction extends RestBaseAction {
 
         context.setConnectScheduler(connectScheduler);
         // mark as registered
-        boolean registered = connectScheduler.registerConnection(context);
-        if (!registered) {
-            throw new StarRocksHttpException(SERVICE_UNAVAILABLE, "Reach limit of connections");
+        Pair<Boolean, String> result = connectScheduler.registerConnection(context);
+        if (!result.first) {
+            throw new StarRocksHttpException(SERVICE_UNAVAILABLE, result.second);
         }
         context.setStartTime();
         LogUtil.logConnectionInfoToAuditLogAndQueryQueue(context, null);
@@ -265,7 +264,7 @@ public class ExecuteSqlAction extends RestBaseAction {
                 }
                 context.setThreadLocalInfo();
             } catch (DdlException e) {
-                throw new StarRocksHttpException(INTERNAL_SERVER_ERROR, context.getState().getErrorMessage());
+                throw new StarRocksHttpException(INTERNAL_SERVER_ERROR, e.getMessage());
             }
         }
     }

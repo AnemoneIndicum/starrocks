@@ -48,6 +48,7 @@ public:
     RuntimeFilterPort(RuntimeState* state) : _state(state) {}
     void add_listener(RuntimeFilterProbeDescriptor* rf_desc);
     void publish_runtime_filters(std::list<RuntimeFilterBuildDescriptor*>& rf_descs);
+    void publish_local_colocate_filters(std::list<RuntimeFilterBuildDescriptor*>& rf_descs);
     // receiver runtime filter allocated in this fragment instance(broadcast join generate it)
     // or allocated in this query(shuffle join generate global runtime filter)
     void receive_runtime_filter(int32_t filter_id, const JoinRuntimeFilter* rf);
@@ -127,6 +128,7 @@ class RuntimeFilterWorker {
 public:
     RuntimeFilterWorker(ExecEnv* env);
     ~RuntimeFilterWorker();
+    void close();
     // open query for creating runtime filter merger.
     void open_query(const TUniqueId& query_id, const TQueryOptions& query_options, const TRuntimeFilterParams& params,
                     bool is_pipeline);
@@ -134,25 +136,31 @@ public:
     void receive_runtime_filter(const PTransmitRuntimeFilterParams& params);
     void execute();
     void send_part_runtime_filter(PTransmitRuntimeFilterParams&& params,
-                                  const std::vector<starrocks::TNetworkAddress>& addrs, int timeout_ms);
+                                  const std::vector<starrocks::TNetworkAddress>& addrs, int timeout_ms,
+                                  int64_t rpc_http_min_size);
     void send_broadcast_runtime_filter(PTransmitRuntimeFilterParams&& params,
-                                       const std::vector<TRuntimeFilterDestination>& destinations, int timeout_ms);
+                                       const std::vector<TRuntimeFilterDestination>& destinations, int timeout_ms,
+                                       int64_t rpc_http_min_size);
+
+    size_t queue_size() const;
 
 private:
     void _receive_total_runtime_filter(PTransmitRuntimeFilterParams& params);
     void _process_send_broadcast_runtime_filter_event(PTransmitRuntimeFilterParams&& params,
                                                       std::vector<TRuntimeFilterDestination>&& destinations,
-                                                      int timeout_ms);
+                                                      int timeout_ms, int64_t rpc_http_min_size);
     void _deliver_broadcast_runtime_filter_passthrough(PTransmitRuntimeFilterParams&& params,
                                                        std::vector<TRuntimeFilterDestination>&& destinations,
-                                                       int timeout_ms);
+                                                       int timeout_ms, int64_t rpc_http_min_size);
     void _deliver_broadcast_runtime_filter_relay(PTransmitRuntimeFilterParams&& params,
-                                                 std::vector<TRuntimeFilterDestination>&& destinations, int timeout_ms);
+                                                 std::vector<TRuntimeFilterDestination>&& destinations, int timeout_ms,
+                                                 int64_t rpc_http_min_size);
     void _deliver_broadcast_runtime_filter_local(PTransmitRuntimeFilterParams& params,
                                                  const TRuntimeFilterDestination& destinations);
 
     void _deliver_part_runtime_filter(std::vector<TNetworkAddress>&& transmit_addrs,
-                                      PTransmitRuntimeFilterParams&& params, int transmit_timeout_ms);
+                                      PTransmitRuntimeFilterParams&& params, int transmit_timeout_ms,
+                                      int64_t rpc_http_min_size);
 
     UnboundedBlockingQueue<RuntimeFilterWorkerEvent> _queue;
     std::unordered_map<TUniqueId, RuntimeFilterMerger> _mergers;

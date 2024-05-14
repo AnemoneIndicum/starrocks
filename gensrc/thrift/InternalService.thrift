@@ -46,6 +46,7 @@ include "Data.thrift"
 include "RuntimeProfile.thrift"
 include "WorkGroup.thrift"
 include "RuntimeFilter.thrift"
+include "CloudConfiguration.thrift"
 
 // constants for function version
 enum TFunctionVersion {
@@ -102,7 +103,8 @@ enum TPipelineProfileLevel {
 enum TSpillMode {
   AUTO,
   FORCE,
-  NONE
+  NONE,
+  RANDOM,
 }
 
 enum TSpillableOperatorType {
@@ -121,6 +123,25 @@ enum TTabletInternalParallelMode {
 enum TOverflowMode {
   OUTPUT_NULL = 0;
   REPORT_ERROR = 1;
+}
+
+enum TTimeUnit {
+    NANOSECOND = 0;
+    MICROSECOND = 1;
+    MILLISECOND = 2;
+    SECOND = 3;
+    MINUTE = 4;
+}
+
+struct TQueryQueueOptions {
+  1: optional bool enable_global_query_queue;
+  2: optional bool enable_group_level_query_queue;
+}
+
+struct TSpillToRemoteStorageOptions {
+  1: optional list<string> remote_storage_paths;
+  2: optional CloudConfiguration.TCloudConfiguration remote_storage_conf;
+  3: optional bool disable_spill_to_local_disk;
 }
 
 // Query options with their respective defaults
@@ -198,13 +219,18 @@ struct TQueryOptions {
   77: optional i64 spill_operator_max_bytes;
   78: optional i32 spill_encode_level;
   79: optional i64 spill_revocable_max_bytes;
+  80: optional bool spill_enable_direct_io;
+  // only used in spill_mode="random"
+  // probability of triggering operator spill
+  // (0.0,1.0)
+  81: optional double spill_rand_ratio;
 
   85: optional TSpillMode spill_mode;
   
   86: optional i32 io_tasks_per_scan_operator = 4;
   87: optional i32 connector_io_tasks_per_scan_operator = 16;
   88: optional double runtime_filter_early_return_selectivity = 0.05;
-
+  89: optional bool enable_dynamic_prune_scan_range = true;
 
   90: optional i64 log_rejected_record_num = 0;
 
@@ -231,6 +257,39 @@ struct TQueryOptions {
 
   106: optional bool enable_agg_spill_preaggregation;
   107: optional i64 global_runtime_filter_build_max_size;
+  108: optional i64 runtime_filter_rpc_http_min_size;
+
+  109: optional i64 big_query_profile_threshold = 0;
+
+  110: optional TQueryQueueOptions query_queue_options;
+
+  111: optional bool enable_file_metacache;
+
+  112: optional bool enable_pipeline_level_shuffle;
+  113: optional bool enable_hyperscan_vec;
+
+  114: optional i32 jit_level = 1;
+
+  115: optional TTimeUnit big_query_profile_threshold_unit = TTimeUnit.SECOND;
+
+  116: optional string sql_dialect;
+
+  117: optional bool enable_spill_to_remote_storage;
+  118: optional TSpillToRemoteStorageOptions spill_to_remote_storage_options;
+
+  119: optional bool enable_result_sink_accumulate;
+  120: optional bool enable_connector_split_io_tasks = false;
+  121: optional i64 connector_max_split_size = 0;
+  122: optional bool enable_connector_sink_writer_scaling = true;
+
+  130: optional bool enable_wait_dependent_event = false;
+
+  131: optional bool orc_use_column_names = false;
+
+  132: optional bool enable_datacache_async_populate_mode;
+  133: optional bool enable_datacache_io_adaptor;
+
+  140: optional string catalog;
 }
 
 
@@ -304,6 +363,8 @@ struct TQueryGlobals {
   // Added by StarRocks
   // Required by function 'last_query_id'.
   30: optional string last_query_id
+
+  31: optional i64 timestamp_us
 }
 
 
@@ -316,6 +377,11 @@ enum InternalServiceVersion {
 struct TAdaptiveDopParam {
   1: optional i64 max_block_rows_per_driver_seq
   2: optional i64 max_output_amplification_factor
+}
+
+struct TPredicateTreeParams {
+  1: optional bool enable_or
+  2: optional bool enable_show_in_profile
 }
 
 // ExecPlanFragment
@@ -376,6 +442,9 @@ struct TExecPlanFragmentParams {
   57: optional bool is_stream_pipeline
 
   58: optional TAdaptiveDopParam adaptive_dop_param
+  59: optional i32 group_execution_scan_dop
+
+  60: optional TPredicateTreeParams pred_tree_params
 }
 
 struct TExecPlanFragmentResult {

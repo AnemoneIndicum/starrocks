@@ -30,6 +30,7 @@ import com.starrocks.sql.optimizer.operator.logical.LogicalProjectOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalTopNOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalValuesOperator;
+import com.starrocks.sql.optimizer.operator.logical.LogicalWindowOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalAssertOneRowOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalCTEAnchorOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalCTEConsumeOperator;
@@ -48,7 +49,6 @@ import com.starrocks.sql.optimizer.operator.physical.PhysicalTableFunctionOperat
 import com.starrocks.sql.optimizer.operator.physical.PhysicalTopNOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalValuesOperator;
 import com.starrocks.sql.optimizer.operator.physical.PhysicalWindowOperator;
-import com.starrocks.sql.optimizer.operator.scalar.CallOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamAggOperator;
 import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamJoinOperator;
@@ -152,6 +152,9 @@ public class LogicalPlanPrinter {
 
         @Override
         public OperatorStr visitLogicalCTEConsume(OptExpression optExpression, Integer step) {
+            if (optExpression.getInputs().isEmpty()) {
+                return new OperatorStr("logical cte consume", step, Collections.emptyList());
+            }
             OperatorStr child = visit(optExpression.getInputs().get(0), step + 1);
 
             return new OperatorStr("logical cte consume", step, Collections.singletonList(child));
@@ -214,9 +217,9 @@ public class LogicalPlanPrinter {
 
             LogicalAggregationOperator aggregate = (LogicalAggregationOperator) optExpression.getOp();
             return new OperatorStr("logical aggregate ("
-                    + aggregate.getGroupingKeys().stream().map(ScalarOperator::debugString)
+                    + aggregate.getGroupingKeys().stream().map(scalarOperatorStringFunction)
                     .collect(Collectors.joining(",")) + ") ("
-                    + aggregate.getAggregations().values().stream().map(CallOperator::debugString).
+                    + aggregate.getAggregations().values().stream().map(scalarOperatorStringFunction).
                     collect(Collectors.joining(",")) + ")",
                     step, Collections.singletonList(child));
         }
@@ -246,6 +249,26 @@ public class LogicalPlanPrinter {
             }
 
             return new OperatorStr(sb.toString(), step, Arrays.asList(leftChild, rightChild));
+        }
+
+        @Override
+        public OperatorStr visitLogicalWindow(OptExpression optExpression, Integer step) {
+            OperatorStr child = visit(optExpression.getInputs().get(0), step + 1);
+
+            LogicalWindowOperator window = optExpression.getOp().cast();
+            String windowCallStr = window.getWindowCall().entrySet().stream()
+                    .map(e -> String.format("%d: %s", e.getKey().getId(),
+                            scalarOperatorStringFunction.apply(e.getValue())))
+                    .collect(Collectors.joining(", "));
+            String windowDefStr = window.getAnalyticWindow() != null ? window.getAnalyticWindow().toSql() : "NONE";
+            String partitionByStr = window.getPartitionExpressions().stream()
+                    .map(scalarOperatorStringFunction).collect(Collectors.joining(", "));
+            String orderByStr = window.getOrderByElements().stream().map(Ordering::toString)
+                    .collect(Collectors.joining(", "));
+            return new OperatorStr("logical window( calls=[" +
+                    windowCallStr + "], window=" +
+                    windowDefStr + ", partitionBy=" +
+                    partitionByStr + ", orderBy=" + orderByStr + ")", step, Collections.singletonList(child));
         }
 
         @Override
@@ -351,6 +374,11 @@ public class LogicalPlanPrinter {
         @Override
         public OperatorStr visitPhysicalIcebergScan(OptExpression optExpression, Integer step) {
             return visitScanCommon(optExpression, step, "ICEBERG SCAN");
+        }
+
+        @Override
+        public OperatorStr visitPhysicalIcebergMetadataScan(OptExpression optExpression, Integer step) {
+            return visitScanCommon(optExpression, step, "ICEBERG METADATA SCAN");
         }
 
         public OperatorStr visitPhysicalProject(OptExpression optExpression, Integer step) {

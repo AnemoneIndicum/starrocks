@@ -41,6 +41,7 @@ namespace starrocks {
 
 class MemTracker;
 class TupleDescriptor;
+class TxnLogPB;
 
 namespace stream_load {
 
@@ -101,7 +102,7 @@ using IndexIdToTabletBEMap = std::unordered_map<int64_t, std::unordered_map<int6
 
 class NodeChannel {
 public:
-    NodeChannel(OlapTableSink* parent, int64_t node_id, bool is_incremental);
+    NodeChannel(OlapTableSink* parent, int64_t node_id, bool is_incremental, ExprContext* where_clause = nullptr);
     ~NodeChannel() noexcept;
 
     // called before open, used to add tablet loacted in this backend
@@ -136,11 +137,14 @@ public:
     // async close interface: try_close() -> [is_close_done()] -> close_wait()
     // if is_close_done() return true, close_wait() will not block
     // otherwise close_wait() will block
-    Status try_close(bool wait_all_sender_close = false);
+    Status try_close();
     bool is_close_done();
     Status close_wait(RuntimeState* state);
 
+    Status try_finish();
+    bool is_finished();
     void cancel(const Status& err_st);
+    void cancel();
 
     void time_report(std::unordered_map<int64_t, AddBatchCounter>* add_batch_counter_map, int64_t* serialize_batch_ns,
                      int64_t* actual_consume_ns) {
@@ -154,12 +158,16 @@ public:
     std::string print_load_info() const { return _load_info; }
     std::string name() const { return _name; }
     bool enable_colocate_mv_index() const { return _enable_colocate_mv_index; }
+    std::vector<TxnLogPB>& txn_logs() { return _txn_logs; }
 
     bool is_incremental() const { return _is_incremental; }
 
     std::set<int64_t> immutable_partition_ids() { return _immutable_partition_ids; }
     bool has_immutable_partition() { return !_immutable_partition_ids.empty(); }
     void reset_immutable_partition_ids() { _immutable_partition_ids.clear(); }
+
+    bool has_primary_replica() const { return _has_primary_replica; }
+    void set_has_primary_replica(bool has_primary_replica) { _has_primary_replica = has_primary_replica; }
 
 private:
     Status _wait_request(ReusableClosure<PTabletWriterAddBatchResult>* closure);
@@ -173,6 +181,8 @@ private:
     Status _open_wait(RefCountClosure<PTabletWriterOpenResult>* open_closure);
     Status _send_request(bool eos, bool wait_all_sender_close = false);
     void _cancel(int64_t index_id, const Status& err_st);
+    Status _filter_indexes_with_where_expr(Chunk* input, const std::vector<uint32_t>& indexes,
+                                           std::vector<uint32_t>& filtered_indexes);
 
     std::unique_ptr<MemTracker> _mem_tracker = nullptr;
 
@@ -194,13 +204,17 @@ private:
 
     // user cancel or get some errors
     bool _cancelled{false};
+    bool _cancel_finished{false};
 
-    // send finished means the consumer thread which send the rpc can exit
-    bool _send_finished{false};
+    // channel is closed
+    bool _closed{false};
+
+    // data sending is finished
+    bool _finished{false};
 
     std::unique_ptr<RowDescriptor> _row_desc;
 
-    doris::PBackendService_Stub* _stub = nullptr;
+    PInternalService_Stub* _stub = nullptr;
     std::vector<RefCountClosure<PTabletWriterOpenResult>*> _open_closures;
 
     std::map<int64_t, std::vector<PTabletWithPartition>> _index_tablets_map;
@@ -208,6 +222,7 @@ private:
 
     std::vector<TTabletCommitInfo> _tablet_commit_infos;
     std::vector<TTabletFailInfo> _tablet_fail_infos;
+    std::vector<TxnLogPB> _txn_logs;
     struct {
         std::unordered_set<std::string> invalid_dict_cache_column_set;
         std::unordered_map<std::string, int64_t> valid_dict_cache_column_set;
@@ -240,11 +255,16 @@ private:
     bool _is_incremental;
 
     std::set<int64_t> _immutable_partition_ids;
+
+    ExprContext* _where_clause = nullptr;
+
+    bool _has_primary_replica = false;
 };
 
 class IndexChannel {
 public:
-    IndexChannel(OlapTableSink* parent, int64_t index_id) : _parent(parent), _index_id(index_id) {}
+    IndexChannel(OlapTableSink* parent, int64_t index_id, ExprContext* where_clause)
+            : _parent(parent), _index_id(index_id), _where_clause(where_clause) {}
     ~IndexChannel();
 
     Status init(RuntimeState* state, const std::vector<PTabletWithPartition>& tablets, bool is_incremental);
@@ -271,7 +291,7 @@ public:
         }
     }
 
-    void mark_as_failed(const NodeChannel* ch) { _failed_channels.insert(ch->node_id()); }
+    void mark_as_failed(const NodeChannel* ch);
 
     bool is_failed_channel(const NodeChannel* ch) { return _failed_channels.count(ch->node_id()) != 0; }
 
@@ -297,6 +317,9 @@ private:
     TWriteQuorumType::type _write_quorum_type = TWriteQuorumType::MAJORITY;
 
     bool _has_incremental_node_channel = false;
+    ExprContext* _where_clause = nullptr;
+
+    bool _has_intolerable_failure = false;
 };
 
 } // namespace stream_load

@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 package com.starrocks.privilege;
 
 import com.google.gson.annotations.SerializedName;
+import com.starrocks.persist.gson.GsonUtils;
 
 import java.util.HashSet;
 import java.util.List;
@@ -136,10 +136,19 @@ public class RolePrivilegeCollectionV2 extends PrivilegeCollectionV2 {
         super.grant(type, privilegeTypes, objects, isGrant);
     }
 
+    public void grantWithoutAssertMutable(ObjectType type, List<PrivilegeType> privilegeTypes,
+                                          List<PEntryObject> objects, boolean isGrant) throws PrivilegeException {
+        super.grant(type, privilegeTypes, objects, isGrant);
+    }
+
     @Override
     public void revoke(ObjectType type, List<PrivilegeType> privilegeTypes, List<PEntryObject> objects)
             throws PrivilegeException {
         assertMutable();
         super.revoke(type, privilegeTypes, objects);
+    }
+
+    public RolePrivilegeCollectionV2 cloneSelf() {
+        return GsonUtils.GSON.fromJson(GsonUtils.GSON.toJson(this), RolePrivilegeCollectionV2.class);
     }
 }

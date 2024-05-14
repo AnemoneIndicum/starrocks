@@ -14,23 +14,27 @@
 
 #include "formats/parquet/metadata.h"
 
+#include <glog/logging.h>
+#include <stdlib.h>
+
 #include <sstream>
+#include <string_view>
+#include <utility>
 
 #include "formats/parquet/schema.h"
 
 namespace starrocks::parquet {
 
-Status FileMetaData::init(const tparquet::FileMetaData& t_metadata, bool case_sensitive) {
+Status FileMetaData::init(tparquet::FileMetaData& t_metadata, bool case_sensitive) {
     // construct schema from thrift
     RETURN_IF_ERROR(_schema.from_thrift(t_metadata.schema, case_sensitive));
     _num_rows = t_metadata.num_rows;
-    _t_metadata = t_metadata;
+    tparquet::swap(_t_metadata, t_metadata);
     if (_t_metadata.__isset.created_by) {
         _writer_version = ApplicationVersion(_t_metadata.created_by);
     } else {
         _writer_version = ApplicationVersion("unknown 0.0.0");
     }
-
     return Status::OK();
 }
 
@@ -308,7 +312,7 @@ private:
         }
 
         auto version_pre_release_start = version_parsing_position_ + 1; // +1 is for '-'.
-        auto version_pre_release_end = version_string_.find_first_of("+", version_pre_release_start);
+        auto version_pre_release_end = version_string_.find_first_of('+', version_pre_release_start);
         // No BUILD_INFO
         if (version_pre_release_end == std::string::npos) {
             version_pre_release_end = version_string_.size();
@@ -339,7 +343,7 @@ private:
         }
         auto build_name_start = build_mark_position + build_mark.size();
         RemovePrecedingSpaces(created_by_, build_name_start, created_by_.size());
-        auto build_name_end = created_by_.find_first_of(")", build_name_start);
+        auto build_name_end = created_by_.find_first_of(')', build_name_start);
         // No end ")".
         if (build_name_end == std::string::npos) {
             return false;

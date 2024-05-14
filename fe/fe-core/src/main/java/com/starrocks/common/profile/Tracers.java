@@ -70,9 +70,15 @@ public class Tracers {
         tracers.allTracer[1] = new TracerImpl(Stopwatch.createStarted(), new TimeWatcher(), new VarTracer(), logTracer);
     }
 
+    // for record metrics in parallel
+    public static Tracers get() {
+        return THREAD_LOCAL.get();
+    }
+
     public static void init(ConnectContext context, Mode mode, String moduleStr) {
         Tracers tracers = THREAD_LOCAL.get();
-        boolean enableProfile = context.getSessionVariable().isEnableProfile();
+        boolean enableProfile =
+                context.getSessionVariable().isEnableProfile() || context.getSessionVariable().isEnableBigQueryProfile();
         boolean checkMV = context.getSessionVariable().isEnableMaterializedViewRewriteOrError();
 
         Module module = getTraceModule(moduleStr);
@@ -109,6 +115,16 @@ public class Tracers {
         }
     }
 
+    public static boolean isSetTraceMode(Mode e) {
+        Tracers tracers = THREAD_LOCAL.get();
+        return (tracers.modeMask & 1 << e.ordinal()) != 0;
+    }
+
+    public static boolean isSetTraceModule(Module m) {
+        Tracers tracers = THREAD_LOCAL.get();
+        return (tracers.moduleMask & 1 << m.ordinal()) != 0;
+    }
+
     public static void close() {
         THREAD_LOCAL.remove();
     }
@@ -131,6 +147,10 @@ public class Tracers {
 
     public static Timer watchScope(Module module, String name) {
         Tracers tracers = THREAD_LOCAL.get();
+        return tracers.tracer(module, Mode.TIMER).watchScope(name);
+    }
+
+    public static Timer watchScope(Tracers tracers, Module module, String name) {
         return tracers.tracer(module, Mode.TIMER).watchScope(name);
     }
 
@@ -157,6 +177,10 @@ public class Tracers {
 
     public static void record(Module module, String name, String value) {
         Tracers tracers = THREAD_LOCAL.get();
+        tracers.tracer(module, Mode.VARS).record(name, value);
+    }
+
+    public static void record(Tracers tracers, Module module, String name, String value) {
         tracers.tracer(module, Mode.VARS).record(name, value);
     }
 

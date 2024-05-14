@@ -14,10 +14,10 @@
 
 #include "exec/pipeline/result_sink_operator.h"
 
-#include "column/chunk.h"
 #include "exprs/expr.h"
 #include "runtime/buffer_control_block.h"
 #include "runtime/http_result_writer.h"
+#include "runtime/metadata_result_writer.h"
 #include "runtime/mysql_result_writer.h"
 #include "runtime/query_statistics.h"
 #include "runtime/result_buffer_mgr.h"
@@ -47,6 +47,9 @@ Status ResultSinkOperator::prepare(RuntimeState* state) {
         break;
     case TResultSinkType::HTTP_PROTOCAL:
         _writer = std::make_shared<HttpResultWriter>(_sender.get(), _output_expr_ctxs, _profile.get(), _format_type);
+        break;
+    case TResultSinkType::METADATA_ICEBERG:
+        _writer = std::make_shared<MetadataResultWriter>(_sender.get(), _output_expr_ctxs, _profile.get(), _sink_type);
         break;
     default:
         return Status::InternalError("Unknown result sink type");
@@ -80,12 +83,11 @@ void ResultSinkOperator::close(RuntimeState* state) {
             if (!st.ok() && final_status.ok()) {
                 final_status = st;
             }
-            _sender->close(final_status);
+            WARN_IF_ERROR(_sender->close(final_status), "close sender failed");
         }
 
-        st = state->exec_env()->result_mgr()->cancel_at_time(
+        (void)state->exec_env()->result_mgr()->cancel_at_time(
                 time(nullptr) + config::result_buffer_cancelled_interval_time, state->fragment_instance_id());
-        st.permit_unchecked_error();
     }
 
     Operator::close(state);
@@ -160,6 +162,10 @@ Status ResultSinkOperatorFactory::prepare(RuntimeState* state) {
 }
 
 void ResultSinkOperatorFactory::close(RuntimeState* state) {
+    if (_sender != nullptr) {
+        WARN_IF_ERROR(_sender->close(_fragment_ctx->final_status()), "close sender failed");
+    }
+
     Expr::close(_output_expr_ctxs, state);
     OperatorFactory::close(state);
 }

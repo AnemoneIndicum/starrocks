@@ -23,14 +23,18 @@ import com.starrocks.catalog.HiveTable;
 import com.starrocks.catalog.Table;
 import com.starrocks.common.Config;
 import com.starrocks.common.util.FrontendDaemon;
+import com.starrocks.connector.iceberg.CachingIcebergCatalog;
+import com.starrocks.connector.iceberg.IcebergCatalog;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.server.MetadataMgr;
+import com.starrocks.sql.optimizer.rule.transformation.materialization.MvUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -45,6 +49,7 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
     private final Map<String, CacheUpdateProcessor> cacheUpdateProcessors = new ConcurrentHashMap<>();
 
     private final ExecutorService refreshRemoteFileExecutor;
+    private final Map<String, IcebergCatalog> cachingIcebergCatalogs = new ConcurrentHashMap<>();
 
     public void registerTableInfo(BaseTableInfo tableInfo) {
         registeredTableInfos.add(tableInfo);
@@ -58,6 +63,16 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
     public void unRegisterCacheUpdateProcessor(String catalogName) {
         LOG.info("unregister to update {} metadata cache in the ConnectorTableMetadataProcessor", catalogName);
         cacheUpdateProcessors.remove(catalogName);
+    }
+
+    public void registerCachingIcebergCatalog(String catalogName, IcebergCatalog icebergCatalog) {
+        LOG.info("register to caching iceberg catalog on {} in the ConnectorTableMetadataProcessor", catalogName);
+        cachingIcebergCatalogs.put(catalogName, icebergCatalog);
+    }
+
+    public void unRegisterCachingIcebergCatalog(String catalogName) {
+        LOG.info("unregister to caching iceberg catalog on {} in the ConnectorTableMetadataProcessor", catalogName);
+        cachingIcebergCatalogs.remove(catalogName);
     }
 
     public ConnectorTableMetadataProcessor() {
@@ -76,6 +91,7 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
 
         if (Config.enable_background_refresh_connector_metadata) {
             refreshCatalogTable();
+            refreshIcebergCachingCatalog();
         }
     }
 
@@ -116,6 +132,20 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
         }
     }
 
+    private void refreshIcebergCachingCatalog() {
+        List<String> catalogNames = Lists.newArrayList(cachingIcebergCatalogs.keySet());
+        for (String catalogName : catalogNames) {
+            CachingIcebergCatalog icebergCatalog = (CachingIcebergCatalog) cachingIcebergCatalogs.get(catalogName);
+            if (icebergCatalog == null) {
+                LOG.error("Failed to get cachingIcebergCatalog by catalog {}.", catalogName);
+                continue;
+            }
+            LOG.info("Start to refresh iceberg caching catalog {}", catalogName);
+            icebergCatalog.refreshCatalog();
+            LOG.info("Finish to refresh iceberg caching catalog {}", catalogName);
+        }
+    }
+
     private void refreshRegisteredTable() {
         MetadataMgr metadataMgr = GlobalStateMgr.getCurrentState().getMetadataMgr();
         List<BaseTableInfo> registeredTableInfoList = Lists.newArrayList(registeredTableInfos);
@@ -124,12 +154,13 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
                     registeredTableInfo.getCatalogName(), registeredTableInfo.getDbName(),
                     registeredTableInfo.getTableName());
             try {
-                Table registeredTable = registeredTableInfo.getTable();
-                if (registeredTable == null) {
+                Optional<Table> registeredTableOpt = MvUtils.getTableWithIdentifier(registeredTableInfo);
+                if (registeredTableOpt.isEmpty()) {
                     LOG.warn("Table {}.{}.{} not exist",  registeredTableInfo.getCatalogName(),
                             registeredTableInfo.getDbName(), registeredTableInfo.getTableName());
                     continue;
                 }
+                Table registeredTable = registeredTableOpt.get();
                 if (!registeredTable.isHiveTable()) {
                     continue;
                 }
@@ -150,7 +181,7 @@ public class ConnectorTableMetadataProcessor extends FrontendDaemon {
         LOG.info("Start to refresh hive external table metadata in the background");
         GlobalStateMgr gsm = GlobalStateMgr.getCurrentState();
         MetadataMgr metadataMgr = gsm.getMetadataMgr();
-        List<Database> databases = gsm.getDbIds().stream()
+        List<Database> databases = gsm.getLocalMetastore().getDbIds().stream()
                 .map(gsm::getDb)
                 .filter(Objects::nonNull)
                 .filter(db -> !db.isSystemDatabase())

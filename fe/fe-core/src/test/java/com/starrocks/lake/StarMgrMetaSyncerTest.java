@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-
 package com.starrocks.lake;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.staros.client.StarClientException;
 import com.staros.proto.ShardGroupInfo;
+import com.starrocks.catalog.ColocateTableIndex;
+import com.starrocks.catalog.ColocateTableIndex.GroupId;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.DistributionInfo;
@@ -28,23 +30,34 @@ import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
 import com.starrocks.catalog.PartitionInfo;
 import com.starrocks.catalog.PartitionType;
+import com.starrocks.catalog.PhysicalPartition;
 import com.starrocks.catalog.Table;
+import com.starrocks.catalog.Tablet;
 import com.starrocks.common.Config;
+import com.starrocks.common.DdlException;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.LocalMetastore;
+import com.starrocks.server.NodeMgr;
+import com.starrocks.server.WarehouseManager;
 import com.starrocks.system.Backend;
 import com.starrocks.system.ComputeNode;
 import com.starrocks.system.SystemInfoService;
+import com.starrocks.warehouse.DefaultWarehouse;
+import com.starrocks.warehouse.Warehouse;
 import mockit.Expectations;
 import mockit.Mock;
 import mockit.MockUp;
 import mockit.Mocked;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -56,10 +69,22 @@ public class StarMgrMetaSyncerTest {
     private GlobalStateMgr globalStateMgr;
 
     @Mocked
+    private NodeMgr nodeMgr;
+
+    @Mocked
     private SystemInfoService systemInfoService;
 
     @Mocked
     private StarOSAgent starOSAgent;
+
+    @Mocked
+    private ColocateTableIndex colocateTableIndex;
+
+    @Mocked
+    private LocalMetastore localMetastore;
+
+    @Mocked
+    private WarehouseManager warehouseManager;
 
     @Before
     public void setUp() throws Exception {
@@ -68,25 +93,77 @@ public class StarMgrMetaSyncerTest {
         long partitionId = 3L;
         long shardGroupId = 12L;
 
-        new MockUp<GlobalStateMgr>() {
+
+
+        new Expectations() {
+            {
+                GlobalStateMgr.getCurrentState();
+                minTimes = 0;
+                result = globalStateMgr;
+            }
+        };
+
+        new Expectations(globalStateMgr) {
+            {
+                globalStateMgr.getNodeMgr();
+                minTimes = 0;
+                result = nodeMgr;
+
+                globalStateMgr.getLocalMetastore();
+                minTimes = 0;
+                result = localMetastore;
+
+                globalStateMgr.getStarOSAgent();
+                minTimes = 0;
+                result = starOSAgent;
+
+                globalStateMgr.getWarehouseMgr();
+                minTimes = 0;
+                result = warehouseManager;
+            }
+        };
+
+        new Expectations() {
+            {
+                starOSAgent.getPrimaryComputeNodeIdByShard(anyLong);
+                minTimes = 0;
+                result = 1;
+
+                systemInfoService.getBackend(1);
+                minTimes = 0;
+                result = new Backend(10001, "host1", 1001);
+            }
+        };
+
+        new Expectations(nodeMgr) {
+            {
+                nodeMgr.getClusterInfo();
+                minTimes = 0;
+                result = systemInfoService;
+            }
+        };
+
+        new MockUp<LocalMetastore>() {
             @Mock
-            public SystemInfoService getCurrentSystemInfo() {
-                return systemInfoService;
+            public Database getDb(String dbName) {
+                return new Database(dbId, dbName);
             }
 
             @Mock
-            public StarOSAgent getStarOSAgent() {
-                return starOSAgent;
-            }
-
-            @Mock
-            public List<Long> getDbIdsIncludeRecycleBin() {
+             public List<Long> getDbIdsIncludeRecycleBin() {
                 return Stream.of(dbId).collect(Collectors.toList());
             }
+
+            @Mock
+            public ColocateTableIndex getColocateTableIndex() {
+                return colocateTableIndex;
+            }
+
             @Mock
             public Database getDbIncludeRecycleBin(long dbId) {
                 return new Database(dbId, "test");
             }
+
             @Mock
             public List<Table> getTablesIncludeRecycleBin(Database db) {
                 List<Column> baseSchema = new ArrayList<>();
@@ -107,18 +184,33 @@ public class StarMgrMetaSyncerTest {
             }
         };
 
-        new Expectations() {
-            {
-                starOSAgent.getPrimaryComputeNodeIdByShard(anyLong);
-                minTimes = 0;
-                result = 1;
+        new MockUp<WarehouseManager>() {
+            @Mock
+            public Warehouse getWarehouse(long warehouseId) {
+                return new DefaultWarehouse(WarehouseManager.DEFAULT_WAREHOUSE_ID,
+                        WarehouseManager.DEFAULT_WAREHOUSE_NAME);
+            }
 
-                systemInfoService.getBackend(1);
-                minTimes = 0;
-                result = new Backend(10001, "host1", 1001);
+            @Mock
+            public ComputeNode getComputeNode(LakeTablet tablet) {
+                return new ComputeNode(1L, "127.0.0.1", 9030);
+            }
+
+            @Mock
+            public ComputeNode getComputeNode(String warehouseName, LakeTablet tablet) {
+                return new ComputeNode(1L, "127.0.0.1", 9030);
+            }
+
+            @Mock
+            public ComputeNode getComputeNode(Long warehouseId, LakeTablet tablet) {
+                return new ComputeNode(1L, "127.0.0.1", 9030);
+            }
+
+            @Mock
+            public ImmutableMap<Long, ComputeNode> getComputeNodesFromWarehouse(long warehouseId) {
+                return ImmutableMap.of(1L, new ComputeNode(1L, "127.0.0.1", 9030));
             }
         };
-
     }
 
     @Test
@@ -130,9 +222,9 @@ public class StarMgrMetaSyncerTest {
         List<ShardGroupInfo> shardGroupInfos = new ArrayList<>();
         for (long groupId : allShardGroupId) {
             ShardGroupInfo info = ShardGroupInfo.newBuilder()
-                            .setGroupId(groupId)
-                            .putProperties("createTime", String.valueOf(System.currentTimeMillis()))
-                            .build();
+                    .setGroupId(groupId)
+                    .putProperties("createTime", String.valueOf(System.currentTimeMillis()))
+                    .build();
             shardGroupInfos.add(info);
         }
 
@@ -145,6 +237,7 @@ public class StarMgrMetaSyncerTest {
                     shardGroupInfos.removeIf(item -> item.getGroupId() == groupId);
                 }
             }
+
             @Mock
             public List<ShardGroupInfo> listShardGroup() {
                 return shardGroupInfos;
@@ -168,6 +261,7 @@ public class StarMgrMetaSyncerTest {
                 backends.add(be2);
                 return backends;
             }
+
             @Mock
             public List<ComputeNode> getComputeNodes() {
                 List<ComputeNode> computeNodes = new ArrayList<>();
@@ -181,7 +275,7 @@ public class StarMgrMetaSyncerTest {
         };
         new MockUp<StarOSAgent>() {
             @Mock
-            public List<String> listDefaultWorkerGroupIpPort() {
+            public List<String> listWorkerGroupIpPort(long workerGroupId) {
                 List<String> addresses = new ArrayList<>();
                 addresses.add("host0:777");
                 addresses.add("host1:888");
@@ -192,5 +286,167 @@ public class StarMgrMetaSyncerTest {
         };
 
         Assert.assertEquals(2, starMgrMetaSyncer.deleteUnusedWorker());
+    }
+
+    @Test
+    public void testSyncTableMetaDbNotExist() throws Exception {
+        new MockUp<GlobalStateMgr>() {
+            @Mock
+            public Database getDb(String dbName) {
+                return null;
+            }
+
+            @Mock
+            public Database getDb(long dbId) {
+                return null;
+            }
+
+            @Mock
+            public List<Long> getDbIds() {
+                return Lists.newArrayList(1000L);
+            }
+        };
+
+        Exception exception = Assertions.assertThrows(DdlException.class, () -> {
+            starMgrMetaSyncer.syncTableMeta("db", "table", true);
+        });
+        starMgrMetaSyncer.syncTableMetaAndColocationInfo();
+    }
+
+    @Test
+    public void testSyncTableMetaTableNotExist() throws Exception {
+        new MockUp<GlobalStateMgr>() {
+            @Mock
+            public Database getDb(String dbName) {
+                return new Database(100, dbName);
+            }
+        };
+
+        new MockUp<Database>() {
+            @Mock
+            public Table getTable(String tableName) {
+                return null;
+            }
+        };
+
+        Exception exception = Assertions.assertThrows(DdlException.class, () -> {
+            starMgrMetaSyncer.syncTableMeta("db", "table", true);
+        });
+    }
+
+    @Test
+    @Ignore
+    public void testSyncTableMeta() throws Exception {
+        long dbId = 100;
+        long tableId = 1000;
+        List<Long> shards = new ArrayList<>();
+
+        new MockUp<GlobalStateMgr>() {
+            @Mock
+            public Database getDb(String dbName) {
+                return new Database(dbId, dbName);
+            }
+
+            @Mock
+            public Database getDb(long id) {
+                return new Database(id, "aaa");
+            }
+
+            @Mock
+            public List<Long> getDbIds() {
+                return Lists.newArrayList(dbId);
+            }
+        };
+
+        List<Column> baseSchema = new ArrayList<>();
+        KeysType keysType = KeysType.AGG_KEYS;
+        PartitionInfo partitionInfo = new PartitionInfo(PartitionType.RANGE);
+        DistributionInfo defaultDistributionInfo = new HashDistributionInfo();
+        Table table = new LakeTable(tableId, "bbb", baseSchema, keysType, partitionInfo, defaultDistributionInfo);
+
+        new MockUp<Database>() {
+            @Mock
+            public Table getTable(String tableName) {
+                return table;
+            }
+
+            @Mock
+            public Table getTable(long tableId) {
+                return table;
+            }
+
+            @Mock
+            public List<Table> getTables() {
+                return Lists.newArrayList(table);
+            }
+        };
+
+        new MockUp<MaterializedIndex>() {
+            @Mock
+            public List<Tablet> getTablets() {
+                List<Tablet> tablets = new ArrayList<>();
+                tablets.add(new LakeTablet(111));
+                tablets.add(new LakeTablet(222));
+                tablets.add(new LakeTablet(333));
+                return tablets;
+            }
+        };
+
+        new MockUp<PhysicalPartition>() {
+            @Mock
+            public long getShardGroupId() {
+                return 444;
+            }
+        };
+
+        new MockUp<StarOSAgent>() {
+            @Mock
+            public List<Long> listShard(long groupId) throws DdlException {
+                return shards;
+            }
+
+            @Mock
+            public void deleteShards(Set<Long> shardIds) throws DdlException {
+                shards.removeAll(shardIds);
+            }
+        };
+
+        new MockUp<ColocateTableIndex>() {
+            @Mock
+            public boolean isLakeColocateTable(long tableId) {
+                return true;
+            }
+
+            @Mock
+            public void updateLakeTableColocationInfo(OlapTable olapTable, boolean isJoin,
+                                                      GroupId expectGroupId) throws DdlException {
+                return;
+            }
+        };
+
+        new MockUp<SystemInfoService>() {
+            @Mock
+            public ComputeNode getBackendOrComputeNode(long nodeId) {
+                return null;
+            }
+        };
+
+        shards.clear();
+        shards.add(111L);
+        shards.add(222L);
+        shards.add(333L);
+        starMgrMetaSyncer.syncTableMeta("db", "table", true);
+        Assert.assertEquals(3, shards.size());
+
+        shards.clear();
+        shards.add(111L);
+        shards.add(222L);
+        shards.add(333L);
+        shards.add(444L);
+        starMgrMetaSyncer.syncTableMetaAndColocationInfo();
+        Assert.assertEquals(3, shards.size());
+        Assert.assertEquals((long) shards.get(0), 111L);
+        Assert.assertEquals((long) shards.get(1), 222L);
+        Assert.assertEquals((long) shards.get(2), 333L);
     }
 }

@@ -37,6 +37,7 @@ import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.connector.hive.HiveMetaClient;
 import com.starrocks.connector.hive.HivePartitionName;
 import com.starrocks.connector.iceberg.IcebergApiConverter;
+import com.starrocks.server.MetadataMgr;
 import mockit.Expectations;
 import mockit.Mock;
 import mockit.MockUp;
@@ -143,8 +144,12 @@ public class PartitionUtilTest {
 
     @Test
     public void testToPartitionValues() {
-        String partitionNames = "a=1/b=2/c=3";
-        Assert.assertEquals(Lists.newArrayList("1", "2", "3"), toPartitionValues(partitionNames));
+        Assert.assertEquals(Lists.newArrayList("1", "2", "3"), toPartitionValues("a=1/b=2/c=3"));
+        Assert.assertEquals(Lists.newArrayList("1", "2=1"), toPartitionValues("a=1/b=2=1"));
+        Assert.assertEquals(Lists.newArrayList("1", "2=null"), toPartitionValues("a=1/b=2=null"));
+        Assert.assertEquals(Lists.newArrayList("1", "2=null", "1"), toPartitionValues("a=1/b=2=null/3=1"));
+        Assert.assertEquals(Lists.newArrayList("1", "2=null", ""), toPartitionValues("a=1/b=2=null/3="));
+        Assert.assertEquals(Lists.newArrayList("1", "", "1"), toPartitionValues("a=1/b=/3=1"));
     }
 
     @Test
@@ -248,13 +253,14 @@ public class PartitionUtilTest {
 
         new MockUp<PartitionUtil>() {
             @Mock
-            public List<String> getPartitionNames(Table table) {
-                return partitionNames;
-            }
-
-            @Mock
             public List<Column> getPartitionColumns(Table table) {
                 return ImmutableList.of(partitionColumn);
+            }
+        };
+        new MockUp<MetadataMgr>() {
+            @Mock
+            public List<String> listPartitionNames(String catalogName, String dbName, String tableName) {
+                return partitionNames;
             }
         };
         new Expectations() {

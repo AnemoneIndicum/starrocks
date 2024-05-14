@@ -16,24 +16,28 @@
 #include "formats/parquet/file_writer.h"
 
 #include <arrow/buffer.h>
-#include <arrow/io/file.h>
-#include <arrow/io/interfaces.h>
-#include <parquet/arrow/writer.h>
+#include <arrow/io/type_fwd.h>
+#include <arrow/util/string_builder.h>
+#include <fmt/core.h>
+#include <glog/logging.h>
+#include <parquet/exception.h>
+#include <parquet/metadata.h>
+#include <parquet/type_fwd.h>
+#include <runtime/current_thread.h>
 
-#include "column/array_column.h"
+#include <ostream>
+
 #include "column/chunk.h"
-#include "column/column_helper.h"
-#include "column/map_column.h"
-#include "column/struct_column.h"
 #include "column/vectorized_fwd.h"
-#include "common/logging.h"
-#include "exprs/column_ref.h"
 #include "exprs/expr.h"
-#include "runtime/exec_env.h"
+#include "exprs/expr_context.h"
+#include "runtime/runtime_state.h"
+#include "types/logical_type.h"
 #include "util/defer_op.h"
 #include "util/priority_thread_pool.hpp"
 #include "util/runtime_profile.h"
 #include "util/slice.h"
+#include "util/stopwatch.hpp"
 
 namespace starrocks::parquet {
 
@@ -237,6 +241,10 @@ arrow::Result<::parquet::schema::NodePtr> ParquetBuildHelper::_make_schema_node(
         return ::parquet::schema::PrimitiveNode::Make(name, rep_type, ::parquet::LogicalType::None(),
                                                       ::parquet::Type::DOUBLE, -1, file_column_id.field_id);
     }
+    case TYPE_BINARY:
+    case TYPE_VARBINARY:
+        return ::parquet::schema::PrimitiveNode::Make(name, rep_type, ::parquet::LogicalType::None(),
+                                                      ::parquet::Type::BYTE_ARRAY, -1, file_column_id.field_id);
     case TYPE_CHAR:
     case TYPE_VARCHAR: {
         return ::parquet::schema::PrimitiveNode::Make(name, rep_type, ::parquet::LogicalType::String(),
@@ -300,6 +308,11 @@ arrow::Result<::parquet::schema::NodePtr> ParquetBuildHelper::_make_schema_node(
         auto key_value = ::parquet::schema::GroupNode::Make("key_value", ::parquet::Repetition::REPEATED, {key, value});
         return ::parquet::schema::GroupNode::Make(name, rep_type, {key_value}, ::parquet::LogicalType::Map(),
                                                   file_column_id.field_id);
+    }
+    case TYPE_TIME: {
+        return ::parquet::schema::PrimitiveNode::Make(
+                name, rep_type, ::parquet::LogicalType::Time(false, ::parquet::LogicalType::TimeUnit::MICROS),
+                ::parquet::Type::INT64, -1, file_column_id.field_id);
     }
     default: {
         return arrow::Status::TypeError(fmt::format("Doesn't support to write {} type data", type_desc.debug_string()));
@@ -414,7 +427,12 @@ Status SyncFileWriter::close() {
     }
 
     RETURN_IF_ERROR(_flush_row_group());
-    _writer->Close();
+    try {
+        _writer->Close();
+    } catch (const ::parquet::ParquetStatusException& e) {
+        LOG(WARNING) << "close writer error: " << e.what();
+        return Status::IOError(fmt::format("{}: {}", "close writer error", e.what()));
+    }
 
     auto arrow_st = _outstream->Close();
     if (!arrow_st.ok()) {
@@ -432,13 +450,14 @@ AsyncFileWriter::AsyncFileWriter(std::unique_ptr<WritableFile> writable_file, st
                                  std::shared_ptr<::parquet::WriterProperties> properties,
                                  std::shared_ptr<::parquet::schema::GroupNode> schema,
                                  const std::vector<ExprContext*>& output_expr_ctxs, PriorityThreadPool* executor_pool,
-                                 RuntimeProfile* parent_profile, int64_t max_file_size)
+                                 RuntimeProfile* parent_profile, int64_t max_file_size, RuntimeState* state)
         : FileWriterBase(std::move(writable_file), std::move(properties), std::move(schema), output_expr_ctxs,
                          max_file_size),
           _file_location(std::move(file_location)),
           _partition_location(std::move(partition_location)),
           _executor_pool(executor_pool),
-          _parent_profile(parent_profile) {
+          _parent_profile(parent_profile),
+          _state(state) {
     _io_timer = ADD_TIMER(_parent_profile, "FileWriterIoTimer");
 }
 
@@ -449,6 +468,7 @@ Status AsyncFileWriter::_flush_row_group() {
     }
 
     bool ok = _executor_pool->try_offer([&]() {
+        SCOPED_THREAD_LOCAL_MEM_TRACKER_SETTER(_state->instance_mem_tracker());
         SCOPED_TIMER(_io_timer);
         if (_chunk_writer != nullptr) {
             try {
@@ -483,6 +503,7 @@ Status AsyncFileWriter::_flush_row_group() {
 Status AsyncFileWriter::close(RuntimeState* state,
                               const std::function<void(starrocks::parquet::AsyncFileWriter*, RuntimeState*)>& cb) {
     bool ret = _executor_pool->try_offer([&, state, cb]() {
+        SCOPED_THREAD_LOCAL_MEM_TRACKER_SETTER(_state->instance_mem_tracker());
         SCOPED_TIMER(_io_timer);
         {
             auto lock = std::unique_lock(_m);
@@ -493,7 +514,6 @@ Status AsyncFileWriter::close(RuntimeState* state,
             // set closed to true anyway
             _closed.store(true);
         });
-
         try {
             _writer->Close();
         } catch (const ::parquet::ParquetStatusException& e) {
@@ -501,7 +521,6 @@ Status AsyncFileWriter::close(RuntimeState* state,
             set_io_status(Status::IOError(fmt::format("{}: {}", "close writer error", e.what())));
         }
         _chunk_writer = nullptr;
-
         _file_metadata = _writer->metadata();
         auto st = _outstream->Close();
         if (!st.ok()) {

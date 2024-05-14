@@ -142,7 +142,8 @@ private:
     Status _do_load(Tablet* tablet, Rowset* rowset);
 
     Status _prepare_partial_update_value_columns(Tablet* tablet, Rowset* rowset, uint32_t idx,
-                                                 const std::vector<uint32_t>& update_column_ids);
+                                                 const std::vector<uint32_t>& update_column_ids,
+                                                 const TabletSchemaCSPtr& tablet_schema);
 
     // `need_lock` means whether the `_index_lock` in TabletUpdates needs to held.
     // `index_lock` is used to avoid access the PrimaryIndex at the same time as the apply thread.
@@ -178,6 +179,7 @@ private:
     TabletSchemaCSPtr _tablet_schema = nullptr;
 
     // column_with_row partial update states
+    bool _partial_update_value_column_inited = false;
     std::vector<uint32_t> _partial_update_value_column_ids;
     // only column added by reading rowset
     Schema _partial_update_value_columns_schema;

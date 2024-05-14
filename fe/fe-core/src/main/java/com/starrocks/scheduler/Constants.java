@@ -40,6 +40,7 @@ public class Constants {
         MV,
         INSERT,
         PIPE,
+        DATACACHE_SELECT
     }
 
     // PENDING -> RUNNING -> FAILED
@@ -49,6 +50,10 @@ public class Constants {
         RUNNING,
         FAILED,
         SUCCESS,
+    }
+
+    public static boolean isFinishState(TaskRunState state) {
+        return state.equals(TaskRunState.SUCCESS) || state.equals(TaskRunState.FAILED);
     }
 
     // Used to determine the scheduling order of Pending TaskRun to Running TaskRun

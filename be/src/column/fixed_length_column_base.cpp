@@ -54,8 +54,7 @@ void FixedLengthColumnBase<T>::append_selective(const Column& src, const uint32_
 }
 
 template <typename T>
-void FixedLengthColumnBase<T>::append_value_multiple_times(const Column& src, uint32_t index, uint32_t size,
-                                                           bool deep_copy) {
+void FixedLengthColumnBase<T>::append_value_multiple_times(const Column& src, uint32_t index, uint32_t size) {
     const T* src_data = reinterpret_cast<const T*>(src.raw_data());
     size_t orig_size = _data.size();
     _data.resize(orig_size + size);
@@ -276,13 +275,16 @@ int64_t FixedLengthColumnBase<T>::xor_checksum(uint32_t from, uint32_t to) const
 }
 
 template <typename T>
-void FixedLengthColumnBase<T>::put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx) const {
+void FixedLengthColumnBase<T>::put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx, bool is_binary_protocol) const {
     if constexpr (IsDecimal<T>) {
         buf->push_decimal(_data[idx].to_string());
+    } else if constexpr (IsDate<T>) {
+        buf->push_date(_data[idx], is_binary_protocol);
+    } else if constexpr (IsTimestamp<T>) {
+        buf->push_timestamp(_data[idx], is_binary_protocol);
     } else if constexpr (std::is_arithmetic_v<T>) {
-        buf->push_number(_data[idx]);
+        buf->push_number(_data[idx], is_binary_protocol);
     } else {
-        // date/datetime or something else.
         std::string s = _data[idx].to_string();
         buf->push_string(s.data(), s.size());
     }

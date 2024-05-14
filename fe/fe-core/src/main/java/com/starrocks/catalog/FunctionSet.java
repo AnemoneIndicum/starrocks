@@ -65,6 +65,7 @@ public class FunctionSet {
     // Date functions:
     public static final String CONVERT_TZ = "convert_tz";
     public static final String CURDATE = "curdate";
+    public static final String CURRENT_DATE = "current_date";
     public static final String CURRENT_TIMESTAMP = "current_timestamp";
     public static final String CURTIME = "curtime";
     public static final String CURRENT_TIME = "current_time";
@@ -80,6 +81,7 @@ public class FunctionSet {
     public static final String DAYOFYEAR = "dayofyear";
     public static final String FROM_DAYS = "from_days";
     public static final String FROM_UNIXTIME = "from_unixtime";
+    public static final String FROM_UNIXTIME_MS = "from_unixtime_ms";
     public static final String HOUR = "hour";
     public static final String MINUTE = "minute";
     public static final String MONTH = "month";
@@ -91,9 +93,20 @@ public class FunctionSet {
     public static final String TIMESTAMPADD = "timestampadd";
     public static final String TIMESTAMPDIFF = "timestampdiff";
     public static final String TO_DATE = "to_date";
+    public static final String DATE = "date";
+    public static final String LAST_DAY = "last_day";
+    public static final String MAKEDATE = "makedate";
+    public static final String NEXT_DAY = "next_day";
+    public static final String PREVIOUS_DAY = "previous_day";
+    public static final String TO_TERA_DATE = "to_tera_date";
     public static final String TO_DAYS = "to_days";
     public static final String UNIX_TIMESTAMP = "unix_timestamp";
     public static final String UTC_TIMESTAMP = "utc_timestamp";
+    public static final String UTC_TIME = "utc_time";
+    public static final String LOCALTIME = "localtime";
+    public static final String LOCALTIMESTAMP = "localtimestamp";
+
+    public static final String WEEK = "week";
     public static final String WEEKOFYEAR = "weekofyear";
     public static final String YEAR = "year";
     public static final String MINUTES_DIFF = "minutes_diff";
@@ -114,8 +127,8 @@ public class FunctionSet {
     public static final String MONTHS_ADD = "months_add";
     public static final String MONTHS_SUB = "months_sub";
     public static final String ADD_MONTHS = "add_months";
-    public static final String DAYS_ADD   = "days_add";
-    public static final String DAYS_SUB   = "days_sub";
+    public static final String DAYS_ADD = "days_add";
+    public static final String DAYS_SUB = "days_sub";
     public static final String ADDDATE = "adddate";
     public static final String SUBDATE = "subdate";
     public static final String TIME_SLICE = "time_slice";
@@ -202,11 +215,14 @@ public class FunctionSet {
     public static final String JSON_OBJECT = "json_object";
     public static final String PARSE_JSON = "parse_json";
     public static final String JSON_QUERY = "json_query";
-    public static final String JSON_EXIST = "json_exists";
+    public static final String JSON_EXISTS = "json_exists";
     public static final String JSON_EACH = "json_each";
+    public static final String GET_JSON_BOOL = "get_json_bool";
     public static final String GET_JSON_DOUBLE = "get_json_double";
     public static final String GET_JSON_INT = "get_json_int";
     public static final String GET_JSON_STRING = "get_json_string";
+    public static final String GET_JSON_OBJECT = "get_json_object";
+    public static final String JSON_LENGTH = "json_length";
 
     // Matching functions:
     public static final String ILIKE = "ilike";
@@ -225,6 +241,7 @@ public class FunctionSet {
     public static final String HOST_NAME = "host_name";
     // Aggregate functions:
     public static final String APPROX_COUNT_DISTINCT = "approx_count_distinct";
+    public static final String APPROX_COUNT_DISTINCT_HLL_SKETCH = "approx_count_distinct_hll_sketch";
     public static final String APPROX_TOP_K = "approx_top_k";
     public static final String AVG = "avg";
     public static final String COUNT = "count";
@@ -264,6 +281,7 @@ public class FunctionSet {
     public static final String DISTINCT_PC = "distinct_pc";
     public static final String DISTINCT_PCSA = "distinct_pcsa";
     public static final String HISTOGRAM = "histogram";
+    public static final String FLAT_JSON_META = "flat_json_meta";
 
     // Bitmap functions:
     public static final String BITMAP_AND = "bitmap_and";
@@ -289,11 +307,13 @@ public class FunctionSet {
     public static final String BITMAP_UNION_INT = "bitmap_union_int";
     public static final String INTERSECT_COUNT = "intersect_count";
     public static final String BITMAP_DICT = "bitmap_dict";
+    public static final String BITMAP_FROM_BINARY = "bitmap_from_binary";
     public static final String EXCHANGE_BYTES = "exchange_bytes";
     public static final String EXCHANGE_SPEED = "exchange_speed";
     // Array functions:
     public static final String ARRAY_AGG = "array_agg";
     public static final String ARRAY_AGG_DISTINCT = "array_agg_distinct";
+    public static final String ARRAY_UNIQUE_AGG = "array_unique_agg";
     public static final String ARRAY_CONCAT = "array_concat";
     public static final String ARRAY_DIFFERENCE = "array_difference";
     public static final String ARRAY_INTERSECT = "array_intersect";
@@ -433,7 +453,7 @@ public class FunctionSet {
     public static final String DISTINCT_MAP_KEYS = "distinct_map_keys";
     public static final String MAP_VALUES = "map_values";
 
-    public static final String MAP_CONCAT= "map_concat";
+    public static final String MAP_CONCAT = "map_concat";
 
     public static final String MAP_FROM_ARRAYS = "map_from_arrays";
     public static final String MAP_KEYS = "map_keys";
@@ -448,6 +468,10 @@ public class FunctionSet {
     public static final String ROW = "row";
     public static final String STRUCT = "struct";
     public static final String NAMED_STRUCT = "named_struct";
+
+    public static final String NGRAM_SEARCH = "ngram_search";
+    public static final String NGRAM_SEARCH_CASE_INSENSITIVE = "ngram_search_case_insensitive";
+
 
     // JSON functions
     public static final Function JSON_QUERY_FUNC = new Function(
@@ -472,7 +496,11 @@ public class FunctionSet {
     public static final String MILLISECONDS_ADD = "milliseconds_add";
     public static final String MILLISECONDS_SUB = "milliseconds_sub";
 
+    // table function
+    public static final String UNNEST = "unnest";
+
     public static final String CONNECTION_ID = "connection_id";
+    public static final String SESSION_ID = "session_id";
 
     public static final String CATALOG = "catalog";
 
@@ -525,6 +553,10 @@ public class FunctionSet {
                     .addAll(Type.FLOAT_TYPES)
                     .build();
 
+    public static final Set<Type> BITMAP_AGG_TYPE =
+            ImmutableSet.<Type>builder()
+                    .addAll(Type.INTEGER_TYPES)
+                    .build();
     /**
      * Use for vectorized engine, but we can't use vectorized function directly, because we
      * need to check whether the expression tree can use vectorized function from bottom to
@@ -568,6 +600,7 @@ public class FunctionSet {
                     .add(FunctionSet.NOW)
                     .add(FunctionSet.UTC_TIMESTAMP)
                     .add(FunctionSet.MD5_SUM)
+                    .add(FunctionSet.APPROX_COUNT_DISTINCT_HLL_SKETCH)
                     .add(FunctionSet.MD5_SUM_NUMERIC)
                     .add(FunctionSet.BITMAP_EMPTY)
                     .add(FunctionSet.HLL_EMPTY)
@@ -588,6 +621,25 @@ public class FunctionSet {
                     .add(RANDOM)
                     .add(UUID)
                     .add(SLEEP)
+                    .build();
+
+    // Only use query cache if these time function can be reduced into a constant
+    // date/datetime value after applying FoldConstantRule, otherwise BE would yield
+    // non-deterministic result when these function is delivered to BE.
+    public static final Set<String> nonDeterministicTimeFunctions =
+            ImmutableSet.<String>builder()
+                    .add(CURTIME)
+                    .add(CURDATE)
+                    .add(CURRENT_DATE)
+                    .add(CURRENT_TIMESTAMP)
+                    .add(CURRENT_TIME)
+                    .add(NOW)
+                    .add(UNIX_TIMESTAMP)
+                    .add(UTC_TIMESTAMP)
+                    .add(UTC_TIME)
+                    .add(LOCALTIME)
+                    .add(LOCALTIMESTAMP)
+                    .add()
                     .build();
 
     public static final Set<String> onlyAnalyticUsedFunctions = ImmutableSet.<String>builder()
@@ -629,6 +681,14 @@ public class FunctionSet {
             .add(FunctionSet.CORR)
             .build();
 
+    public static final Set<String> IGNORE_NULL_WINDOW_FUNCTION =
+            ImmutableSet.<String>builder().add(FunctionSet.FIRST_VALUE)
+                    .add(FunctionSet.LAST_VALUE)
+                    .add(FunctionSet.FIRST_VALUE_REWRITE)
+                    .add(FunctionSet.LEAD)
+                    .add(FunctionSet.LAG)
+                    .build();
+
     public static final List<String> ARRAY_DECIMAL_FUNCTIONS = ImmutableList.<String>builder()
             .add(ARRAY_SUM)
             .add(ARRAY_AVG)
@@ -647,6 +707,7 @@ public class FunctionSet {
 
     public static final Set<String> INFORMATION_FUNCTIONS = ImmutableSet.<String>builder()
             .add(CONNECTION_ID)
+            .add(SESSION_ID)
             .add(CATALOG)
             .add(DATABASE)
             .add(SCHEMA)
@@ -662,6 +723,9 @@ public class FunctionSet {
                 fields.add(new StructField("count", Type.BIGINT));
                 return new ArrayType(new StructType(fields, true));
             };
+
+    public static final Set<String> INDEX_ONLY_FUNCTIONS =
+            ImmutableSet.<String>builder().add().add(NGRAM_SEARCH).add(NGRAM_SEARCH_CASE_INSENSITIVE).build();
 
     public FunctionSet() {
         vectorizedFunctions = Maps.newHashMap();
@@ -812,6 +876,9 @@ public class FunctionSet {
 
     public Function getFunction(Function desc, Function.CompareMode mode) {
         List<Function> fns = vectorizedFunctions.get(desc.functionName());
+        if (desc.hasNamedArg() && fns != null && !fns.isEmpty()) {
+            fns = fns.stream().filter(Function::hasNamedArg).collect(Collectors.toList());
+        }
         if (fns == null || fns.isEmpty()) {
             return null;
         }
@@ -953,6 +1020,12 @@ public class FunctionSet {
                     Lists.newArrayList(t), Type.BIGINT, Type.VARBINARY,
                     true, false, true));
 
+            //APPROX_COUNT_DISTINCT_HLL_SKETCH
+            //compute approx count distinct use DataSketches HyperLogLog
+            addBuiltin(AggregateFunction.createBuiltin(APPROX_COUNT_DISTINCT_HLL_SKETCH,
+                    Lists.newArrayList(t), Type.BIGINT, Type.VARCHAR,
+                    true, false, true));
+
             // HLL_RAW
             addBuiltin(AggregateFunction.createBuiltin(HLL_RAW,
                     Lists.newArrayList(t), Type.HLL, Type.VARBINARY,
@@ -985,6 +1058,8 @@ public class FunctionSet {
 
         // array_agg(distinct)
         registerBuiltinArrayAggDistinctFunction();
+
+        registerBuiltinArrayUniqueAggFunction();
 
         // Avg
         registerBuiltinAvgAggFunction();
@@ -1089,6 +1164,9 @@ public class FunctionSet {
                 Type.VARCHAR, Type.VARCHAR, true, false, false));
         addBuiltin(AggregateFunction.createBuiltin(DICT_MERGE, Lists.newArrayList(Type.ARRAY_VARCHAR),
                 Type.VARCHAR, Type.VARCHAR, true, false, false));
+        // flat json meta
+        addBuiltin(AggregateFunction.createBuiltin(FLAT_JSON_META, Lists.newArrayList(Type.JSON),
+                Type.ARRAY_VARCHAR, Type.ARRAY_VARCHAR, false, false, false));
 
         for (Type t : Type.getSupportedTypes()) {
             // null/char/time is handled through type promotion
@@ -1205,6 +1283,32 @@ public class FunctionSet {
                 Lists.newArrayList(Type.TIME), Type.ARRAY_DATETIME, Type.ARRAY_DATETIME,
                 false, false, false));
     }
+
+    private void registerBuiltinArrayUniqueAggFunction() {
+        // array_unique_agg mapping array_agg_distinct while array as input.
+        for (ScalarType type : Type.getNumericTypes()) {
+            Type arrayType = new ArrayType(type);
+            addBuiltin(AggregateFunction.createBuiltin(FunctionSet.ARRAY_UNIQUE_AGG,
+                    Lists.newArrayList(arrayType), arrayType, arrayType,
+                    false, false, false));
+        }
+
+        for (ScalarType type : Type.STRING_TYPES) {
+            Type arrayType = new ArrayType(type);
+            addBuiltin(AggregateFunction.createBuiltin(FunctionSet.ARRAY_UNIQUE_AGG,
+                    Lists.newArrayList(arrayType), arrayType, arrayType,
+                    false, false, false));
+        }
+
+        for (ScalarType type : Type.DATE_TYPES) {
+            Type arrayType = new ArrayType(type);
+            addBuiltin(AggregateFunction.createBuiltin(FunctionSet.ARRAY_UNIQUE_AGG,
+                    Lists.newArrayList(arrayType), arrayType, arrayType,
+                    false, false, false));
+        }
+    }
+
+
     private void registerBuiltinAvgAggFunction() {
         // TODO: switch to CHAR(sizeof(AvgIntermediateType) when that becomes available
         for (ScalarType type : Type.FLOAT_TYPES) {

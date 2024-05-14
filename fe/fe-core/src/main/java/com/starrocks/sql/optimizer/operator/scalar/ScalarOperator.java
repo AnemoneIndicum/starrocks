@@ -16,12 +16,15 @@ package com.starrocks.sql.optimizer.operator.scalar;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Lists;
+import com.starrocks.analysis.Expr;
+import com.starrocks.analysis.LiteralExpr;
 import com.starrocks.catalog.Type;
 import com.starrocks.sql.optimizer.base.ColumnRefSet;
 import com.starrocks.sql.optimizer.operator.OperatorType;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 import static java.util.Objects.requireNonNull;
 
@@ -40,7 +43,11 @@ public abstract class ScalarOperator implements Cloneable {
     // whether the ScalarOperator is pushdown from equivalence derivation
     protected boolean isPushdown = false;
 
+    protected boolean isCorrelated = false;
+
     private List<String> hints = Collections.emptyList();
+
+    private boolean isIndexOnlyFilter = false;
 
     public ScalarOperator(OperatorType opType, Type type) {
         this.opType = requireNonNull(opType, "opType is null");
@@ -110,6 +117,18 @@ public abstract class ScalarOperator implements Cloneable {
         this.fromPredicateRangeDerive = fromPredicateRangeDerive;
     }
 
+    public boolean isIndexOnlyFilter() {
+        boolean result = isIndexOnlyFilter;
+        for (ScalarOperator child : getChildren()) {
+            result = result || child.isIndexOnlyFilter();
+        }
+        return result;
+    }
+
+    public void setIndexOnlyFilter(boolean indexOnlyFilter) {
+        isIndexOnlyFilter = indexOnlyFilter;
+    }
+
     public abstract List<ScalarOperator> getChildren();
 
     public abstract ScalarOperator getChild(int index);
@@ -174,6 +193,10 @@ public abstract class ScalarOperator implements Cloneable {
         return this instanceof ColumnRefOperator;
     }
 
+    public boolean isCast() {
+        return this instanceof CastOperator;
+    }
+
     public boolean isConstantRef() {
         return this instanceof ConstantOperator;
     }
@@ -224,6 +247,14 @@ public abstract class ScalarOperator implements Cloneable {
         this.isPushdown = isPushdown;
     }
 
+    public boolean isCorrelated() {
+        return isCorrelated;
+    }
+
+    public void setCorrelated(boolean correlated) {
+        isCorrelated = correlated;
+    }
+
     // whether ScalarOperator are equals without id
     public static boolean isEquivalent(ScalarOperator left, ScalarOperator right) {
         if (!left.getOpType().equals(right.getOpType())) {
@@ -259,5 +290,28 @@ public abstract class ScalarOperator implements Cloneable {
                     && binaryPredicate.getChild(0).isColumnRef() && binaryPredicate.getChild(1).isConstantRef();
         }
         return false;
+    }
+
+    public static void updateLiteralPredicates(ScalarOperator predicate, List<Expr> exprs) {
+        if (predicate instanceof CompoundPredicateOperator) {
+            updateCompoundLiteralPredicate((CompoundPredicateOperator) predicate, exprs);
+        } else {
+            updateSingleLiteralPredicate(predicate, exprs.get(0));
+        }
+    }
+
+    private static void updateCompoundLiteralPredicate(CompoundPredicateOperator compoundPredicate, List<Expr> exprs) {
+        for (int i = 0; i < compoundPredicate.getChildren().size(); i++) {
+            updateSingleLiteralPredicate(compoundPredicate.getChild(i), exprs.get(i));
+        }
+    }
+
+    private static void updateSingleLiteralPredicate(ScalarOperator predicate, Expr expr) {
+        Object realObjectValue = ((LiteralExpr) expr).getRealObjectValue();
+        Optional<ConstantOperator> constantOperator =
+                new ConstantOperator(realObjectValue, expr.getType()).castTo(predicate.getChild(1).getType());
+        if (constantOperator.isPresent()) {
+            predicate.setChild(1, constantOperator.get());
+        }
     }
 }

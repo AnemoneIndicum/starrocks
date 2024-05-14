@@ -47,6 +47,7 @@ public:
     ~ConstColumn() override = default;
 
     bool is_nullable() const override { return _data->is_nullable(); }
+    bool is_json() const override { return _data->is_json(); }
 
     bool is_null(size_t index) const override { return _data->is_null(0); }
 
@@ -106,7 +107,7 @@ public:
 
     void append_selective(const Column& src, const uint32_t* indexes, uint32_t from, uint32_t size) override;
 
-    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size, bool deep_copy) override;
+    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size) override;
 
     ColumnPtr replicate(const std::vector<uint32_t>& offsets) override;
 
@@ -202,7 +203,9 @@ public:
 
     int64_t xor_checksum(uint32_t from, uint32_t to) const override;
 
-    void put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx) const override { _data->put_mysql_row_buffer(buf, 0); }
+    void put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx, bool is_binary_protocol = false) const override {
+        _data->put_mysql_row_buffer(buf, 0, is_binary_protocol);
+    }
 
     std::string get_name() const override { return "const-" + _data->get_name(); }
 

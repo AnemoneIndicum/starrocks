@@ -14,9 +14,14 @@
 
 #pragma once
 
+#include <stdint.h>
+
+#include <string>
+
 #include "common/status.h"
 #include "formats/parquet/schema.h"
 #include "gen_cpp/parquet_types.h"
+#include "types/logical_type.h"
 
 namespace starrocks::parquet {
 
@@ -75,7 +80,7 @@ public:
     FileMetaData() = default;
     ~FileMetaData() = default;
 
-    Status init(const tparquet::FileMetaData& t_metadata, bool case_sensitive);
+    Status init(tparquet::FileMetaData& t_metadata, bool case_sensitive);
 
     uint64_t num_rows() const { return _num_rows; }
 

@@ -14,24 +14,75 @@
 
 #pragma once
 
-#include <exception>
 #include <orc/OrcFile.hh>
-#include <set>
-#include <unordered_map>
 #include <utility>
 
 #include "cctz/civil_time.h"
 #include "cctz/time_zone.h"
 #include "column/vectorized_fwd.h"
+#include "exec/pipeline/operator.h"
 #include "formats/orc/orc_mapping.h"
-#include "formats/orc/utils.h"
 #include "gen_cpp/orc_proto.pb.h"
-#include "runtime/types.h"
+#include "io/shared_buffered_input_stream.h"
 #include "types/date_value.h"
-#include "types/logical_type.h"
 #include "types/timestamp_value.h"
 
 namespace starrocks {
+
+class OrcPredicates {
+public:
+    OrcPredicates(const std::vector<Expr*>* conjuncts, const RuntimeFilterProbeCollector* rf_collector)
+            : conjuncts(conjuncts), rf_collector(rf_collector) {}
+    const std::vector<Expr*>* conjuncts;
+    const RuntimeFilterProbeCollector* rf_collector;
+};
+
+class DiskRange {
+public:
+    DiskRange(int64_t off, int64_t len) : offset(off), length(len) {
+        DCHECK(off >= 0);
+        DCHECK(len > 0);
+    }
+
+    /**
+    * Returns the minimal DiskRange that encloses both this DiskRange
+    * and otherDiskRange. If there was a gap between the ranges the
+    * new range will cover that gap.
+    */
+    DiskRange span(const DiskRange& otherDiskRange) const {
+        const int64_t start = std::min(offset, otherDiskRange.offset);
+        const int64_t end = std::max(get_end(), otherDiskRange.get_end());
+        return DiskRange(start, end - start);
+    }
+
+    int64_t get_end() const { return offset + length; }
+
+    int64_t offset;
+    int64_t length;
+};
+
+class DiskRangeHelper {
+public:
+    static void mergeAdjacentDiskRanges(std::vector<io::SharedBufferedInputStream::IORange>& io_ranges,
+                                        const std::vector<DiskRange>& disk_ranges, const int64_t max_merge_distance,
+                                        const int64_t max_merged_size) {
+        if (disk_ranges.empty()) {
+            return;
+        }
+        DiskRange last = disk_ranges[0];
+        for (size_t i = 1; i < disk_ranges.size(); i++) {
+            DiskRange current = disk_ranges[i];
+            DiskRange merged = last.span(current);
+            if (merged.length <= max_merged_size && last.get_end() + max_merge_distance >= current.offset) {
+                last = merged;
+            } else {
+                io_ranges.emplace_back(last.offset, last.length, true);
+                last = current;
+            }
+        }
+        io_ranges.emplace_back(last.offset, last.length, true);
+    }
+};
 
 // Hive ORC char type will pad trailing spaces.
 // https://docs.cloudera.com/documentation/enterprise/6/6.3/topics/impala_char.html
@@ -53,7 +104,7 @@ public:
 // orc timestamp is millseconds since unix epoch time.
 // timestamp conversion is quite tricky, because it involves timezone info,
 // and it affects how we interpret `value`. according to orc v1 spec
-// https://orc.apache.org/specification/ORCv1/ writer timezoe  is in stripe footer.
+// https://orc.apache.org/specification/ORCv1/ writer timezone is in stripe footer.
 
 // time conversion involves two aspects:
 // 1. timezone (UTC/GMT and local timezone)
@@ -85,7 +136,7 @@ public:
         tv->from_timestamp(tp.year(), tp.month(), tp.day(), tp.hour(), tp.minute(), tp.second(), 0);
     }
     static void orc_ts_to_native_ts(TimestampValue* tv, const cctz::time_zone& tz, int64_t tzoffset, int64_t seconds,
-                                    int64_t nanoseconds, bool is_instant = false) {
+                                    int64_t nanoseconds, bool is_instant) {
         if (seconds >= 0) {
             seconds = is_instant ? seconds + tzoffset : seconds;
             orc_ts_to_native_ts_after_unix_epoch(tv, seconds, nanoseconds);
@@ -96,6 +147,13 @@ public:
                 orc_ts_to_native_ts_before_unix_epoch(tv, cctz::utc_time_zone(), seconds, nanoseconds);
             }
         }
+    }
+
+    static void native_ts_to_orc_ts(const TimestampValue& tv, int64_t& seconds, int64_t& nanoseconds) {
+        Timestamp time = tv._timestamp & TIMESTAMP_BITS_TIME;
+        uint64_t microseconds = time % USECS_PER_SEC;
+        seconds = tv.to_unix_second();
+        nanoseconds = microseconds * 1000;
     }
 };
 

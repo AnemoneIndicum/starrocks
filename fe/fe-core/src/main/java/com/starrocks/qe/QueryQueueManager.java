@@ -18,17 +18,15 @@ import com.starrocks.common.Pair;
 import com.starrocks.common.UserException;
 import com.starrocks.metric.MetricRepo;
 import com.starrocks.metric.ResourceGroupMetricMgr;
-import com.starrocks.planner.ScanNode;
-import com.starrocks.planner.SchemaScanNode;
 import com.starrocks.qe.scheduler.RecoverableException;
 import com.starrocks.qe.scheduler.slot.LogicalSlot;
+import com.starrocks.qe.scheduler.slot.SlotProvider;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.system.Frontend;
 import com.starrocks.thrift.TWorkGroup;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
@@ -51,10 +49,7 @@ public class QueryQueueManager {
     }
 
     public void maybeWait(ConnectContext context, DefaultCoordinator coord) throws UserException, InterruptedException {
-        if (!needCheckQueue(coord) || !isEnableQueue(coord)) {
-            return;
-        }
-
+        SlotProvider slotProvider = coord.getJobSpec().getSlotProvider();
         long startMs = System.currentTimeMillis();
         boolean isPending = false;
         try {
@@ -74,7 +69,7 @@ public class QueryQueueManager {
                 long currentMs = System.currentTimeMillis();
                 if (currentMs >= timeoutMs) {
                     MetricRepo.COUNTER_QUERY_QUEUE_TIMEOUT.increase(1L);
-                    GlobalStateMgr.getCurrentState().getSlotProvider().cancelSlotRequirement(slotRequirement);
+                    slotProvider.cancelSlotRequirement(slotRequirement);
                     String errMsg = String.format(PENDING_TIMEOUT_ERROR_MSG_FORMAT,
                             GlobalVariable.getQueryQueuePendingTimeoutSecond(),
                             GlobalVariable.QUERY_QUEUE_PENDING_TIMEOUT_SECOND);
@@ -82,7 +77,7 @@ public class QueryQueueManager {
                     throw new UserException(errMsg);
                 }
 
-                Future<LogicalSlot> slotFuture = GlobalStateMgr.getCurrentState().getSlotProvider().requireSlot(slotRequirement);
+                Future<LogicalSlot> slotFuture = slotProvider.requireSlot(slotRequirement);
 
                 // Wait for slot allocated.
                 try {
@@ -109,33 +104,9 @@ public class QueryQueueManager {
         }
     }
 
-    public boolean isEnableQueue(DefaultCoordinator coord) {
-        if (coord.getJobSpec().isStatisticsJob()) {
-            return GlobalVariable.isEnableQueryQueueStatistic();
-        }
-
-        if (coord.isLoadType()) {
-            return GlobalVariable.isEnableQueryQueueLoad();
-        }
-
-        return GlobalVariable.isEnableQueryQueueSelect();
-    }
-
-    public boolean needCheckQueue(DefaultCoordinator coord) {
-        if (!coord.getJobSpec().isNeedQueued()) {
-            return false;
-        }
-
-        // The queries only using schema meta will never been queued, because a MySQL client will
-        // query schema meta after the connection is established.
-        List<ScanNode> scanNodes = coord.getScanNodes();
-        boolean notNeed = scanNodes.isEmpty() || scanNodes.stream().allMatch(SchemaScanNode.class::isInstance);
-        return !notNeed;
-    }
-
     private LogicalSlot createSlot(DefaultCoordinator coord) throws UserException {
         Pair<String, Integer> selfIpAndPort = GlobalStateMgr.getCurrentState().getNodeMgr().getSelfIpAndRpcPort();
-        Frontend frontend = GlobalStateMgr.getCurrentState().getFeByHost(selfIpAndPort.first);
+        Frontend frontend = GlobalStateMgr.getCurrentState().getNodeMgr().getFeByHost(selfIpAndPort.first);
         if (frontend == null) {
             throw new UserException("cannot get frontend from the local host: " + selfIpAndPort.first);
         }

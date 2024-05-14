@@ -81,6 +81,7 @@ public:
     void update_has_null();
 
     bool is_nullable() const override { return true; }
+    bool is_json() const override { return _data_column->is_json(); }
 
     bool is_null(size_t index) const override {
         DCHECK_EQ(_null_column->size(), _data_column->size());
@@ -129,10 +130,7 @@ public:
         _null_column->assign(n, idx);
     }
 
-    void remove_first_n_values(size_t count) override {
-        _data_column->remove_first_n_values(count);
-        _null_column->remove_first_n_values(count);
-    }
+    void remove_first_n_values(size_t count) override;
 
     void append_datum(const Datum& datum) override;
 
@@ -140,9 +138,7 @@ public:
 
     void append_selective(const Column& src, const uint32_t* indexes, uint32_t from, uint32_t size) override;
 
-    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size, bool deep_copy) override;
-
-    void append_shallow_copy(const Column& src, size_t offset, size_t count) override;
+    void append_value_multiple_times(const Column& src, uint32_t index, uint32_t size) override;
 
     bool append_nulls(size_t count) override;
 
@@ -216,7 +212,7 @@ public:
 
     int64_t xor_checksum(uint32_t from, uint32_t to) const override;
 
-    void put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx) const override;
+    void put_mysql_row_buffer(MysqlRowBuffer* buf, size_t idx, bool is_binary_protocol = false) const override;
 
     std::string get_name() const override { return "nullable-" + _data_column->get_name(); }
 

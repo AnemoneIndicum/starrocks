@@ -20,11 +20,10 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.LiteralExpr;
-import com.starrocks.analysis.NullLiteral;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Database;
-import com.starrocks.catalog.ExternalOlapTable;
 import com.starrocks.catalog.HiveTable;
+import com.starrocks.catalog.KeysType;
 import com.starrocks.catalog.MaterializedView;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Partition;
@@ -34,7 +33,6 @@ import com.starrocks.common.AnalysisException;
 import com.starrocks.common.ErrorCode;
 import com.starrocks.common.ErrorReport;
 import com.starrocks.connector.hive.HiveWriteUtils;
-import com.starrocks.external.starrocks.TableMetaSyncer;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.CatalogMgr;
 import com.starrocks.sql.ast.DefaultValueExpr;
@@ -68,7 +66,14 @@ public class InsertAnalyzer {
         /*
          *  Target table
          */
-        Table table = getTargetTable(insertStmt, session);
+        Table table;
+        if (insertStmt.getTargetTable() != null) {
+            // For the OLAP external table,
+            // the target table is synchronized from another cluster and saved into InsertStmt during beginTransaction.
+            table = insertStmt.getTargetTable();
+        } else {
+            table = getTargetTable(insertStmt, session);
+        }
 
         if (table instanceof OlapTable) {
             OlapTable olapTable = (OlapTable) table;
@@ -120,6 +125,13 @@ public class InsertAnalyzer {
                     HiveWriteUtils.isS3Url(table.getTableLocation()) && insertStmt.isOverwrite()) {
                 throw new SemanticException("Unsupported insert overwrite hive unpartitioned table with s3 location");
             }
+
+            if (table.isHiveTable() && ((HiveTable) table).getHiveTableType() != HiveTable.HiveTableType.MANAGED_TABLE &&
+                    !session.getSessionVariable().enableWriteHiveExternalTable()) {
+                throw new SemanticException("Only support to write hive managed table, tableType: " +
+                        ((HiveTable) table).getHiveTableType());
+            }
+
             PartitionNames targetPartitionNames = insertStmt.getTargetPartitionNames();
             List<String> tablePartitionColumnNames = table.getPartitionColumnNames();
             if (insertStmt.getTargetColumnNames() != null) {
@@ -152,7 +164,7 @@ public class InsertAnalyzer {
                 targetColumns = new ArrayList<>(((OlapTable) table).getBaseSchemaWithoutGeneratedColumn());
                 mentionedColumns =
                         ((OlapTable) table).getBaseSchemaWithoutGeneratedColumn().stream()
-                            .map(Column::getName).collect(Collectors.toSet());
+                                .map(Column::getName).collect(Collectors.toSet());
             } else {
                 targetColumns = new ArrayList<>(table.getBaseSchema());
                 mentionedColumns =
@@ -160,6 +172,9 @@ public class InsertAnalyzer {
             }
         } else {
             targetColumns = new ArrayList<>();
+            Set<String> requiredKeyColumns = table.getBaseSchema().stream().filter(Column::isKey)
+                    .filter(c -> c.getDefaultValueType() == Column.DefaultValueType.NULL)
+                    .filter(c -> !c.isAutoIncrement()).map(c -> c.getName().toLowerCase()).collect(Collectors.toSet());
             for (String colName : insertStmt.getTargetColumnNames()) {
                 Column column = table.getColumn(colName);
                 if (column == null) {
@@ -171,21 +186,36 @@ public class InsertAnalyzer {
                 if (!mentionedColumns.add(colName)) {
                     throw new SemanticException("Column '%s' specified twice", colName);
                 }
+                requiredKeyColumns.remove(colName.toLowerCase());
                 targetColumns.add(column);
+            }
+            if (table.isOlapTable()) {
+                OlapTable olapTable = (OlapTable) table;
+                if (olapTable.getKeysType().equals(KeysType.PRIMARY_KEYS)) {
+                    if (!requiredKeyColumns.isEmpty()) {
+                        String missingKeyColumns = String.join(",", requiredKeyColumns);
+                        ErrorReport.reportSemanticException(ErrorCode.ERR_MISSING_KEY_COLUMNS, missingKeyColumns);
+                    }
+                    if (targetColumns.size() < olapTable.getBaseSchemaWithoutGeneratedColumn().size()) {
+                        insertStmt.setUsePartialUpdate();
+                    }
+                }
             }
         }
 
-        for (Column column : table.getBaseSchema()) {
-            Column.DefaultValueType defaultValueType = column.getDefaultValueType();
-            if (defaultValueType == Column.DefaultValueType.NULL && !column.isAllowNull() &&
-                    !column.isAutoIncrement() && !column.isGeneratedColumn() &&
-                    !mentionedColumns.contains(column.getName())) {
-                String msg = "";
-                for (String s : mentionedColumns) {
-                    msg = msg + " " + s + " ";
+        if (!insertStmt.usePartialUpdate()) {
+            for (Column column : table.getBaseSchema()) {
+                Column.DefaultValueType defaultValueType = column.getDefaultValueType();
+                if (defaultValueType == Column.DefaultValueType.NULL && !column.isAllowNull() &&
+                        !column.isAutoIncrement() && !column.isGeneratedColumn() &&
+                        !mentionedColumns.contains(column.getName())) {
+                    StringBuilder msg = new StringBuilder();
+                    for (String s : mentionedColumns) {
+                        msg.append(" ").append(s).append(" ");
+                    }
+                    throw new SemanticException("'%s' must be explicitly mentioned in column permutation: %s",
+                            column.getName(), msg.toString());
                 }
-                throw new SemanticException("'%s' must be explicitly mentioned in column permutation: %s",
-                        column.getName(), msg);
             }
         }
 
@@ -196,7 +226,8 @@ public class InsertAnalyzer {
         }
 
         if (query.getRelationFields().size() != mentionedColumnSize) {
-            throw new SemanticException("Column count doesn't match value count");
+            ErrorReport.reportSemanticException(ErrorCode.ERR_INSERTED_COLUMN_MISMATCH, mentionedColumnSize,
+                    query.getRelationFields().size());
         }
         // check default value expr
         if (query instanceof ValuesRelation) {
@@ -218,7 +249,6 @@ public class InsertAnalyzer {
         }
 
         insertStmt.setTargetTable(table);
-        insertStmt.setTargetColumns(targetColumns);
         if (session.getDumpInfo() != null) {
             session.getDumpInfo().addTable(insertStmt.getTableName().getDb(), table);
         }
@@ -262,43 +292,23 @@ public class InsertAnalyzer {
                 throw new SemanticException("partition value should be literal expression");
             }
 
-            if (partitionValue instanceof NullLiteral) {
-                throw new SemanticException("partition value can't be null");
-            }
-
             LiteralExpr literalExpr = (LiteralExpr) partitionValue;
             Column column = table.getColumn(actualName);
             try {
-                Expr expr = LiteralExpr.create(literalExpr.getStringValue(), column.getType());
+                Type type = literalExpr.isConstantNull() ? Type.NULL : column.getType();
+                Expr expr = LiteralExpr.create(literalExpr.getStringValue(), type);
                 insertStmt.getTargetPartitionNames().getPartitionColValues().set(i, expr);
             } catch (AnalysisException e) {
                 throw new SemanticException(e.getMessage());
             }
         }
     }
-  
-    private static ExternalOlapTable getOLAPExternalTableMeta(Database database, ExternalOlapTable externalOlapTable) {
-        // copy the table, and release database lock when synchronize table meta
-        ExternalOlapTable copiedTable = new ExternalOlapTable();
-        externalOlapTable.copyOnlyForQuery(copiedTable);
-        int lockTimes = 0;
-        while (database.isReadLockHeldByCurrentThread()) {
-            database.readUnlock();
-            lockTimes++;
-        }
-        try {
-            new TableMetaSyncer().syncTable(copiedTable);
-        } finally {
-            while (lockTimes-- > 0) {
-                database.readLock();
-            }
-        }
-        return copiedTable;
-    }
 
     private static Table getTargetTable(InsertStmt insertStmt, ConnectContext session) {
         if (insertStmt.useTableFunctionAsTargetTable()) {
-            return insertStmt.makeTableFunctionTable();
+            return insertStmt.makeTableFunctionTable(session.getSessionVariable());
+        } else if (insertStmt.useBlackHoleTableAsTargetTable()) {
+            return insertStmt.makeBlackHoleTable();
         }
 
         MetaUtils.normalizationTableName(session, insertStmt.getTableName());
@@ -306,17 +316,12 @@ public class InsertAnalyzer {
         String dbName = insertStmt.getTableName().getDb();
         String tableName = insertStmt.getTableName().getTbl();
 
-        try {
-            MetaUtils.checkCatalogExistAndReport(catalogName);
-        } catch (AnalysisException e) {
-            ErrorReport.reportSemanticException(ErrorCode.ERR_BAD_CATALOG_ERROR, catalogName);
-        }
+        MetaUtils.checkCatalogExistAndReport(catalogName);
 
         Database database = MetaUtils.getDatabase(catalogName, dbName);
-        Table table = MetaUtils.getTable(catalogName, dbName, tableName);
-
-        if (table instanceof ExternalOlapTable) {
-            table = getOLAPExternalTableMeta(database, (ExternalOlapTable) table);
+        Table table = MetaUtils.getSessionAwareTable(session, database, insertStmt.getTableName());
+        if (table == null) {
+            throw new SemanticException("Table %s is not found", tableName);
         }
 
         if (table instanceof MaterializedView && !insertStmt.isSystem()) {
@@ -332,7 +337,7 @@ public class InsertAnalyzer {
             }
             if (table instanceof OlapTable && ((OlapTable) table).getState() != NORMAL) {
                 String msg =
-                        String.format("table state is %s, please wait to insert overwrite util table state is normal",
+                        String.format("table state is %s, please wait to insert overwrite until table state is normal",
                                 ((OlapTable) table).getState());
                 throw unsupportedException(msg);
             }

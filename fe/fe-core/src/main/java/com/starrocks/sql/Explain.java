@@ -84,6 +84,7 @@ import com.starrocks.sql.optimizer.operator.scalar.ExistsPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.InPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.IsNullPredicateOperator;
 import com.starrocks.sql.optimizer.operator.scalar.LikePredicateOperator;
+import com.starrocks.sql.optimizer.operator.scalar.MatchExprOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.operator.scalar.ScalarOperatorVisitor;
 import com.starrocks.sql.optimizer.operator.stream.PhysicalStreamAggOperator;
@@ -179,6 +180,11 @@ public class Explain {
         }
 
         @Override
+        public OperatorStr visitPhysicalProject(OptExpression optExpression, OperatorPrinter.ExplainContext context) {
+            return visit(optExpression.getInputs().get(0), context);
+        }
+
+        @Override
         public OperatorStr visitPhysicalOlapScan(OptExpression optExpression, OperatorPrinter.ExplainContext context) {
             PhysicalOlapScanOperator scan = (PhysicalOlapScanOperator) optExpression.getOp();
 
@@ -210,6 +216,9 @@ public class Explain {
                     "/" +
                     totalTabletsNum;
             buildOperatorProperty(sb, partitionAndBucketInfo, context.step);
+            if (scan.getGtid() > 0) {
+                buildOperatorProperty(sb, "gtid: " + scan.getGtid(), context.step);
+            }
             buildCommonProperty(sb, scan, context.step);
             return new OperatorStr(sb.toString(), context.step, Collections.emptyList());
         }
@@ -600,11 +609,11 @@ public class Explain {
 
             StringBuilder sb = new StringBuilder("- DECODE ")
                     .append(buildOutputColumns(decode,
-                            "[" + decode.getDictToStrings().keySet().stream().map(Object::toString)
+                            "[" + decode.getDictIdToStringsId().keySet().stream().map(Object::toString)
                                     .collect(Collectors.joining(", ")) + "]"))
                     .append("\n");
 
-            for (Map.Entry<Integer, Integer> kv : decode.getDictToStrings().entrySet()) {
+            for (Map.Entry<Integer, Integer> kv : decode.getDictIdToStringsId().entrySet()) {
                 buildOperatorProperty(sb, kv.getValue().toString() + " := " + kv.getKey().toString(), context.step);
             }
 
@@ -752,7 +761,7 @@ public class Explain {
 
         @Override
         public String visit(ScalarOperator scalarOperator, Void context) {
-            return scalarOperator.accept(this, null);
+            return scalarOperator.toString();
         }
 
         @Override
@@ -909,6 +918,11 @@ public class Explain {
             }
 
             return print(predicate.getChild(0)) + " REGEXP " + print(predicate.getChild(1));
+        }
+
+        @Override
+        public String visitMatchExprOperator(MatchExprOperator predicate, Void context) {
+            return print(predicate.getChild(0)) + " MATCH " + print(predicate.getChild(1));
         }
 
         @Override

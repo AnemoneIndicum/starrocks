@@ -54,9 +54,14 @@ public class PruneHDFSScanColumnRule extends TransformationRule {
             new PruneHDFSScanColumnRule(OperatorType.LOGICAL_FILE_SCAN);
     public static final PruneHDFSScanColumnRule PAIMON_SCAN =
             new PruneHDFSScanColumnRule(OperatorType.LOGICAL_PAIMON_SCAN);
+    public static final PruneHDFSScanColumnRule ODPS_SCAN =
+            new PruneHDFSScanColumnRule(OperatorType.LOGICAL_ODPS_SCAN);
 
     public static final PruneHDFSScanColumnRule TABLE_FUNCTION_TABLE_SCAN =
             new PruneHDFSScanColumnRule(OperatorType.LOGICAL_TABLE_FUNCTION_TABLE_SCAN);
+
+    public static final PruneHDFSScanColumnRule ICEBERG_METADATA_SCAN =
+            new PruneHDFSScanColumnRule(OperatorType.LOGICAL_ICEBERG_METADATA_SCAN);
 
     public PruneHDFSScanColumnRule(OperatorType logicalOperatorType) {
         super(RuleType.TF_PRUNE_OLAP_SCAN_COLUMNS, Pattern.create(logicalOperatorType));
@@ -140,6 +145,7 @@ public class PruneHDFSScanColumnRule extends TransformationRule {
                                 scanOperator.getPredicate());
                 newScanOperator.getScanOptimzeOption().setCanUseAnyColumn(canUseAnyColumn);
                 newScanOperator.setScanOperatorPredicates(scanOperator.getScanOperatorPredicates());
+
                 return Lists.newArrayList(new OptExpression(newScanOperator));
             } catch (Exception e) {
                 throw new StarRocksPlannerException(e.getMessage(), ErrorType.INTERNAL_ERROR);

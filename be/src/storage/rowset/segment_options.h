@@ -24,6 +24,8 @@
 #include "storage/del_vector.h"
 #include "storage/disjunctive_predicates.h"
 #include "storage/olap_runtime_range_pruner.h"
+#include "storage/options.h"
+#include "storage/predicate_tree/predicate_tree.hpp"
 #include "storage/seek_range.h"
 #include "storage/tablet_schema.h"
 
@@ -46,14 +48,12 @@ using ShortKeyRangeOptionPtr = std::shared_ptr<ShortKeyRangeOption>;
 
 class SegmentReadOptions {
 public:
-    using PredicateList = std::vector<const ColumnPredicate*>;
-
     std::shared_ptr<FileSystem> fs;
 
     std::vector<SeekRange> ranges;
 
-    std::unordered_map<ColumnId, PredicateList> predicates;
-    std::unordered_map<ColumnId, PredicateList> predicates_for_zone_map;
+    PredicateTree pred_tree;
+    PredicateTree pred_tree_for_zone_map;
 
     DisjunctivePredicates delete_predicates;
 
@@ -65,6 +65,7 @@ public:
     int64_t version = 0;
     // used for primary key tablet to get delta column group
     std::shared_ptr<DeltaColumnGroupLoader> dcg_loader;
+    std::string rowset_path;
 
     // REQUIRED (null is not allowed)
     OlapReaderStatistics* stats = nullptr;
@@ -72,7 +73,7 @@ public:
     RuntimeProfile* profile = nullptr;
 
     bool use_page_cache = false;
-    bool fill_data_cache = true;
+    LakeIOOptions lake_io_opts{.fill_data_cache = true};
 
     ReaderType reader_type = READER_QUERY;
     int chunk_size = DEFAULT_CHUNK_SIZE;
@@ -99,6 +100,8 @@ public:
     TabletSchemaCSPtr tablet_schema = nullptr;
 
     bool asc_hint = true;
+
+    bool prune_column_after_index_filter = false;
 
 public:
     Status convert_to(SegmentReadOptions* dst, const std::vector<LogicalType>& new_types, ObjectPool* obj_pool) const;

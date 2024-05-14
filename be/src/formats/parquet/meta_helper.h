@@ -14,15 +14,34 @@
 
 #pragma once
 
+#include <glog/logging.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#include <ostream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "exec/hdfs_scanner.h"
 #include "formats/parquet/group_reader.h"
+#include "formats/parquet/metadata.h"
 #include "gen_cpp/Descriptors_types.h"
-#include "metadata.h"
+#include "gen_cpp/parquet_types.h"
 #include "runtime/descriptors.h"
+
+namespace starrocks {
+class SlotDescriptor;
+class TIcebergSchema;
+class TIcebergSchemaField;
+
+namespace parquet {
+class FileMetaData;
+struct ParquetField;
+} // namespace parquet
+} // namespace starrocks
 
 namespace starrocks::parquet {
 
@@ -60,30 +79,26 @@ public:
     }
 
 protected:
-    GroupReaderParam::Column _build_column(int32_t field_idx_in_parquet, int32_t col_idx_in_chunk,
-                                           const tparquet::Type::type& col_type_in_parquet,
-                                           const TypeDescriptor& col_type_in_chunk, const SlotId& slot_id,
-                                           bool decode_needed,
+    GroupReaderParam::Column _build_column(int32_t idx_in_parquet, const tparquet::Type::type& type_in_parquet,
+                                           SlotDescriptor* slot_desc, bool decode_needed,
                                            const TIcebergSchemaField* t_iceberg_schema_field = nullptr) const {
         GroupReaderParam::Column column{};
-        column.field_idx_in_parquet = field_idx_in_parquet;
-        column.col_idx_in_chunk = col_idx_in_chunk;
-        column.col_type_in_parquet = col_type_in_parquet;
-        column.col_type_in_chunk = col_type_in_chunk;
-        column.slot_id = slot_id;
+        column.idx_in_parquet = idx_in_parquet;
+        column.type_in_parquet = type_in_parquet;
+        column.slot_desc = slot_desc;
         column.t_iceberg_schema_field = t_iceberg_schema_field;
         column.decode_needed = decode_needed;
         return column;
     }
 
     bool _case_sensitive = false;
-    std::shared_ptr<FileMetaData> _file_metadata;
+    FileMetaData* _file_metadata;
 };
 
 class ParquetMetaHelper : public MetaHelper {
 public:
-    ParquetMetaHelper(std::shared_ptr<FileMetaData> file_metadata, bool case_sensitive) {
-        _file_metadata = std::move(file_metadata);
+    ParquetMetaHelper(FileMetaData* file_metadata, bool case_sensitive) {
+        _file_metadata = file_metadata;
         _case_sensitive = case_sensitive;
     }
     ~ParquetMetaHelper() override = default;
@@ -100,9 +115,8 @@ public:
 
 class IcebergMetaHelper : public MetaHelper {
 public:
-    IcebergMetaHelper(std::shared_ptr<FileMetaData> file_metadata, bool case_sensitive,
-                      const TIcebergSchema* t_iceberg_schema) {
-        _file_metadata = std::move(file_metadata);
+    IcebergMetaHelper(FileMetaData* file_metadata, bool case_sensitive, const TIcebergSchema* t_iceberg_schema) {
+        _file_metadata = file_metadata;
         _case_sensitive = case_sensitive;
         _t_iceberg_schema = t_iceberg_schema;
         DCHECK(_t_iceberg_schema != nullptr);

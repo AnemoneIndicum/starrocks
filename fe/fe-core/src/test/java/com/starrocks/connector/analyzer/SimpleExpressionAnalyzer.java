@@ -369,7 +369,7 @@ public class SimpleExpressionAnalyzer {
             predicateBaseAndCheck(node);
 
             List<Type> list = node.getChildren().stream().map(Expr::getType).collect(Collectors.toList());
-            Type compatibleType = TypeManager.getCompatibleTypeForBetweenAndIn(list);
+            Type compatibleType = TypeManager.getCompatibleTypeForBetweenAndIn(list, true);
 
             for (Type type : list) {
                 if (!Type.canCastTo(type, compatibleType)) {
@@ -387,7 +387,7 @@ public class SimpleExpressionAnalyzer {
             Type type1 = node.getChild(0).getType();
             Type type2 = node.getChild(1).getType();
 
-            Type compatibleType = TypeManager.getCompatibleTypeForBinary(node.getOp(), type1, type2);
+            Type compatibleType = TypeManager.getCompatibleTypeForBinary(node.getOp().isRange(), type1, type2);
             // check child type can be cast
             final String ERROR_MSG = "Column type %s does not support binary predicate operation.";
             if (!Type.canCastTo(type1, compatibleType)) {
@@ -557,7 +557,7 @@ public class SimpleExpressionAnalyzer {
 
             // check compatible type
             List<Type> list = node.getChildren().stream().map(Expr::getType).collect(Collectors.toList());
-            Type compatibleType = TypeManager.getCompatibleTypeForBetweenAndIn(list);
+            Type compatibleType = TypeManager.getCompatibleTypeForBetweenAndIn(list, false);
 
             for (Type type : list) {
                 // TODO(mofei) support it

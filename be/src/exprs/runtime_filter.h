@@ -230,9 +230,9 @@ private:
 
     // Common:
     // log_num_buckets_ is the log (base 2) of the number of buckets in the directory:
-    int _log_num_buckets;
+    int _log_num_buckets = 0;
     // directory_mask_ is (1 << log_num_buckets_) - 1
-    uint32_t _directory_mask;
+    uint32_t _directory_mask = 0;
     Bucket* _directory = nullptr;
 };
 
@@ -364,6 +364,11 @@ public:
     virtual JoinRuntimeFilter* create_empty(ObjectPool* pool) = 0;
     void set_global() { this->_global = true; }
 
+    // only used in local colocate filter
+    bool is_group_colocate_filter() const { return !_group_colocate_filters.empty(); }
+    std::vector<JoinRuntimeFilter*>& group_colocate_filter() { return _group_colocate_filters; }
+    const std::vector<JoinRuntimeFilter*>& group_colocate_filter() const { return _group_colocate_filters; }
+
 protected:
     void _update_version() { _rf_version++; }
 
@@ -375,6 +380,8 @@ protected:
     std::vector<SimdBlockFilter> _hash_partition_bf;
     bool _always_true = false;
     size_t _rf_version = 0;
+    // local colocate filters is local filter we don't have to serialize them
+    std::vector<JoinRuntimeFilter*> _group_colocate_filters;
 };
 
 template <typename ModuloFunc>

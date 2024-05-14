@@ -18,15 +18,20 @@ package com.starrocks.server;
 import com.starrocks.catalog.Catalog;
 import com.starrocks.catalog.ExternalCatalog;
 import com.starrocks.common.DdlException;
+import com.starrocks.connector.ConnectorMgr;
 import com.starrocks.persist.DropCatalogLog;
+import com.starrocks.persist.metablock.SRMetaBlockEOFException;
+import com.starrocks.persist.metablock.SRMetaBlockException;
+import com.starrocks.persist.metablock.SRMetaBlockReader;
 import com.starrocks.sql.analyzer.AnalyzeTestUtil;
 import com.starrocks.sql.ast.DropCatalogStmt;
 import com.starrocks.utframe.StarRocksAssert;
 import com.starrocks.utframe.UtFrameUtils;
+import mockit.MockUp;
 import org.junit.After;
+import org.junit.Assert;
 import org.junit.BeforeClass;
 import org.junit.Test;
-import org.wildfly.common.Assert;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -80,6 +85,24 @@ public class CatalogMgrTest {
         catalogMgr.replayCreateCatalog(catalog);
         Assert.assertFalse(GlobalStateMgr.getCurrentState().getCatalogMgr().catalogExists("catalog_1"));
         Assert.assertFalse(GlobalStateMgr.getCurrentState().getConnectorMgr().connectorExists("catalog_1"));
+
+        config.put("type", "paimon");
+        final ExternalCatalog catalog1 = new ExternalCatalog(10000, "catalog_3", "", config);
+        Assert.assertThrows(DdlException.class, () -> {
+            catalogMgr.replayCreateCatalog(catalog1);
+        });
+    }
+
+    @Test
+    public void testCreate() throws DdlException {
+        CatalogMgr catalogMgr = GlobalStateMgr.getCurrentState().getCatalogMgr();
+        Map<String, String> config = new HashMap<>();
+
+        config.put("type", "paimon");
+        final ExternalCatalog catalog = new ExternalCatalog(10000, "catalog_0", "", config);
+        Assert.assertThrows(DdlException.class, () -> {
+            catalogMgr.replayCreateCatalog(catalog);
+        });
     }
 
     @Test
@@ -102,4 +125,36 @@ public class CatalogMgrTest {
         Assert.assertTrue(catalogMgr.catalogExists("hive_catalog"));
     }
 
+    @Test
+    public void testLoadCatalogWithException() throws IOException, SRMetaBlockException, SRMetaBlockEOFException {
+        CatalogMgr catalogMgr = GlobalStateMgr.getCurrentState().getCatalogMgr();
+        Assert.assertTrue(catalogMgr.catalogExists("hive_catalog"));
+
+        UtFrameUtils.PseudoImage.setUpImageVersion();
+        UtFrameUtils.PseudoImage image = new UtFrameUtils.PseudoImage();
+        catalogMgr.save(image.getDataOutputStream());
+        SRMetaBlockReader reader = new SRMetaBlockReader(image.getDataInputStream());
+
+        CatalogMgr loadCatalogMgr = new CatalogMgr(new ConnectorMgr());
+        loadCatalogMgr.load(reader);
+        Assert.assertTrue(loadCatalogMgr.catalogExists("hive_catalog"));
+
+        // test load with ddl exception
+        loadCatalogMgr = new CatalogMgr(new ConnectorMgr());
+        reader = new SRMetaBlockReader(image.getDataInputStream());
+        new MockUp<CatalogMgr>() {
+            @mockit.Mock
+            public void replayCreateCatalog(Catalog catalog) throws DdlException {
+                throw new DdlException("create catalog failed");
+            }
+        };
+
+        try {
+            loadCatalogMgr.load(reader);
+        } catch (Exception e) {
+            // should not throw exception
+            Assert.fail();
+        }
+        Assert.assertFalse(loadCatalogMgr.catalogExists("hive_catalog"));
+    }
 }

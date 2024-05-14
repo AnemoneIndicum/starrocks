@@ -23,8 +23,8 @@ import java.util.Map;
 public class TaskRunBuilder {
     private final Task task;
     private Map<String, String> properties;
-    private Constants.TaskType type;
     private ConnectContext connectContext;
+    private ExecuteOption executeOption = new ExecuteOption();
 
     public static TaskRunBuilder newBuilder(Task task) {
         return new TaskRunBuilder(task);
@@ -46,9 +46,12 @@ public class TaskRunBuilder {
         taskRun.setTaskId(task.getId());
         taskRun.setProperties(mergeProperties());
         taskRun.setTask(task);
+        taskRun.setExecuteOption(executeOption);
         taskRun.setType(getTaskType());
         if (task.getSource().equals(Constants.TaskSource.MV)) {
             taskRun.setProcessor(new PartitionBasedMvRefreshProcessor());
+        } else if (task.getSource().equals(Constants.TaskSource.DATACACHE_SELECT)) {
+            taskRun.setProcessor(new DataCacheSelectProcessor());
         } else {
             taskRun.setProcessor(new SqlTaskRunProcessor());
         }
@@ -56,7 +59,11 @@ public class TaskRunBuilder {
     }
 
     private Constants.TaskType getTaskType() {
-        return type != null ? type : task.getType();
+        if (executeOption.isManual()) {
+            return Constants.TaskType.MANUAL;
+        } else {
+            return task.getType();
+        }
     }
 
     private Map<String, String> mergeProperties() {
@@ -77,14 +84,16 @@ public class TaskRunBuilder {
         return this;
     }
 
-    public TaskRunBuilder type(ExecuteOption option) {
-        if (option.isManual()) {
-            this.type = Constants.TaskType.MANUAL;
-        }
-        return this;
-    }
-
     public Long getTaskId() {
         return task.getId();
+    }
+
+    public ExecuteOption getExecuteOption() {
+        return executeOption;
+    }
+
+    public TaskRunBuilder setExecuteOption(ExecuteOption executeOption) {
+        this.executeOption = executeOption;
+        return this;
     }
 }

@@ -22,6 +22,7 @@ import com.starrocks.catalog.Function;
 import com.starrocks.catalog.InternalCatalog;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.UserIdentity;
+import com.starrocks.sql.ast.pipe.PipeName;
 import com.starrocks.sql.common.MetaUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -103,6 +104,12 @@ public class NativeAccessController implements AccessController {
     public void checkAnyActionOnAnyTable(UserIdentity currentUser, Set<Long> roleIds, String catalog, String db)
             throws AccessDeniedException {
         checkAnyActionOnTable(currentUser, roleIds, new TableName(catalog, db, "*"));
+    }
+
+    @Override
+    public void checkColumnsAction(UserIdentity currentUser, Set<Long> roleIds, TableName tableName,
+                                   Set<String> columns, PrivilegeType privilegeType) throws AccessDeniedException {
+        throw new AccessDeniedException("Column-level access control not implemented");
     }
 
     @Override
@@ -242,6 +249,20 @@ public class NativeAccessController implements AccessController {
     }
 
     @Override
+    public void checkPipeAction(UserIdentity currentUser, Set<Long> roleIds, PipeName name, PrivilegeType privilegeType)
+            throws AccessDeniedException {
+        checkObjectTypeAction(currentUser, roleIds, privilegeType, ObjectType.PIPE,
+                Lists.newArrayList(name.getDbName(), name.getPipeName()));
+    }
+
+    @Override
+    public void checkAnyActionOnPipe(UserIdentity currentUser, Set<Long> roleIds, PipeName name)
+            throws AccessDeniedException {
+        checkAnyActionOnObject(currentUser, roleIds, ObjectType.PIPE,
+                Lists.newArrayList(name.getDbName(), name.getPipeName()));
+    }
+
+    @Override
     public void checkStorageVolumeAction(UserIdentity currentUser, Set<Long> roleIds, String storageVolume,
                                          PrivilegeType privilegeType) throws AccessDeniedException {
         checkObjectTypeAction(currentUser, roleIds,
@@ -329,7 +350,7 @@ public class NativeAccessController implements AccessController {
                 throw new AccessDeniedException();
             }
         } catch (PrivObjNotFoundException e) {
-            LOG.info("Object not found when checking any action on {} {}, message: {}",
+            LOG.debug("Object not found when checking any action on {} {}, message: {}",
                     objectType.name(), getFullyQualifiedNameFromListAllowNull(objectTokens), e.getMessage());
         } catch (PrivilegeException e) {
             LOG.warn("caught exception when checking any action on {} {}",

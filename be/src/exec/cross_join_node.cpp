@@ -186,7 +186,7 @@ void CrossJoinNode::_copy_probe_rows_with_index_base_probe(ColumnPtr& dest_col, 
             dest_col->append_nulls(copy_number);
         } else {
             // repeat the value from probe table for copy_number times
-            dest_col->append_value_multiple_times(*src_col.get(), start_row, copy_number, false);
+            dest_col->append_value_multiple_times(*src_col.get(), start_row, copy_number);
         }
     } else {
         if (src_col->is_constant()) {
@@ -197,7 +197,7 @@ void CrossJoinNode::_copy_probe_rows_with_index_base_probe(ColumnPtr& dest_col, 
             dest_col->append_selective(*const_col->data_column(), &_buf_selective[0], 0, copy_number);
         } else {
             // repeat the value from probe table for copy_number times
-            dest_col->append_value_multiple_times(*src_col.get(), start_row, copy_number, false);
+            dest_col->append_value_multiple_times(*src_col.get(), start_row, copy_number);
         }
     }
 }
@@ -258,14 +258,14 @@ void CrossJoinNode::_copy_build_rows_with_index_base_build(ColumnPtr& dest_col, 
             _buf_selective.assign(row_count, 0);
             dest_col->append_selective(*const_col->data_column(), &_buf_selective[0], 0, row_count);
         } else {
-            dest_col->append_value_multiple_times(*src_col.get(), start_row, row_count, false);
+            dest_col->append_value_multiple_times(*src_col.get(), start_row, row_count);
         }
     } else {
         if (src_col->is_constant()) {
             // current can't reach here
             dest_col->append_nulls(row_count);
         } else {
-            dest_col->append_value_multiple_times(*src_col.get(), start_row, row_count, false);
+            dest_col->append_value_multiple_times(*src_col.get(), start_row, row_count);
         }
     }
 }
@@ -586,9 +586,7 @@ std::vector<std::shared_ptr<pipeline::OperatorFactory>> CrossJoinNode::_decompos
 
     size_t num_right_partitions = context->source_operator(right_ops)->degree_of_parallelism();
     auto workgroup = context->fragment_context()->workgroup();
-    auto executor = std::make_shared<spill::IOTaskExecutor>(ExecEnv::GetInstance()->scan_executor(), workgroup);
-    auto spill_process_factory_ptr =
-            std::make_shared<SpillProcessChannelFactory>(num_right_partitions, std::move(executor));
+    auto spill_process_factory_ptr = std::make_shared<SpillProcessChannelFactory>(num_right_partitions);
     context_params.spill_process_factory_ptr = spill_process_factory_ptr;
 
     auto cross_join_context = std::make_shared<NLJoinContext>(std::move(context_params));
@@ -611,8 +609,10 @@ std::vector<std::shared_ptr<pipeline::OperatorFactory>> CrossJoinNode::_decompos
                                            std::move(_conjunct_ctxs), std::move(cross_join_context), _join_op);
     // Initialize OperatorFactory's fields involving runtime filters.
     this->init_runtime_filter_for_operator(left_factory.get(), context, rc_rf_probe_collector);
-    left_ops = context->maybe_interpolate_local_adpative_passthrough_exchange(runtime_state(), id(), left_ops,
-                                                                              context->degree_of_parallelism());
+    if (!context->is_colocate_group()) {
+        left_ops = context->maybe_interpolate_local_adpative_passthrough_exchange(runtime_state(), id(), left_ops,
+                                                                                  context->degree_of_parallelism());
+    }
     left_ops.emplace_back(std::move(left_factory));
 
     if (limit() != -1) {

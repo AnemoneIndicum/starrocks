@@ -51,11 +51,14 @@ import com.starrocks.persist.RoutineLoadOperation;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.qe.OriginStatement;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.RunMode;
+import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.ast.AlterRoutineLoadStmt;
 import com.starrocks.sql.ast.CreateRoutineLoadStmt;
 import com.starrocks.thrift.TKafkaRLTaskProgress;
 import com.starrocks.transaction.TransactionState;
 import com.starrocks.utframe.UtFrameUtils;
+import com.starrocks.warehouse.DefaultWarehouse;
 import mockit.Expectations;
 import mockit.Injectable;
 import mockit.Mock;
@@ -105,8 +108,10 @@ public class RoutineLoadJobTest {
     }
 
     @Test
-    public void testAfterAborted(@Injectable TransactionState transactionState,
+    public void testAfterAborted(@Mocked RoutineLoadMgr routineLoadMgr,
+                                 @Injectable TransactionState transactionState,
                                  @Injectable KafkaTaskInfo routineLoadTaskInfo) throws UserException {
+        Deencapsulation.setField(routineLoadTaskInfo, "routineLoadManager", routineLoadMgr);
         List<RoutineLoadTaskInfo> routineLoadTaskInfoList = Lists.newArrayList();
         routineLoadTaskInfoList.add(routineLoadTaskInfo);
         long txnId = 1L;
@@ -114,10 +119,12 @@ public class RoutineLoadJobTest {
         RLTaskTxnCommitAttachment attachment = new RLTaskTxnCommitAttachment();
         TKafkaRLTaskProgress tKafkaRLTaskProgress = new TKafkaRLTaskProgress();
         tKafkaRLTaskProgress.partitionCmtOffset = Maps.newHashMap();
-        KafkaProgress kafkaProgress = new KafkaProgress(tKafkaRLTaskProgress);
+        KafkaProgress kafkaProgress = new KafkaProgress(tKafkaRLTaskProgress.getPartitionCmtOffset());
         Deencapsulation.setField(attachment, "progress", kafkaProgress);
 
-        KafkaProgress currentProgress = new KafkaProgress(tKafkaRLTaskProgress);
+        KafkaProgress currentProgress = new KafkaProgress(tKafkaRLTaskProgress.getPartitionCmtOffset());
+
+        RoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
 
         new Expectations() {
             {
@@ -136,6 +143,9 @@ public class RoutineLoadJobTest {
                 routineLoadTaskInfo.getId();
                 minTimes = 0;
                 result = UUID.randomUUID();
+                routineLoadMgr.getJob(anyLong);
+                minTimes = 0;
+                result = routineLoadJob;
             }
         };
 
@@ -146,7 +156,6 @@ public class RoutineLoadJobTest {
         };
 
         String txnStatusChangeReasonString = "no data";
-        RoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
         Deencapsulation.setField(routineLoadJob, "state", RoutineLoadJob.JobState.RUNNING);
         Deencapsulation.setField(routineLoadJob, "routineLoadTaskInfoList", routineLoadTaskInfoList);
         Deencapsulation.setField(routineLoadJob, "progress", currentProgress);
@@ -154,20 +163,113 @@ public class RoutineLoadJobTest {
 
         Assert.assertEquals(RoutineLoadJob.JobState.RUNNING, routineLoadJob.getState());
         Assert.assertEquals(new Long(1), Deencapsulation.getField(routineLoadJob, "abortedTaskNum"));
+        Assert.assertTrue(routineLoadJob.getOtherMsg(), routineLoadJob.getOtherMsg().endsWith(txnStatusChangeReasonString));
     }
 
     @Test
-    public void testGetShowInfo(@Mocked KafkaProgress kafkaProgress) {
-        RoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
-        Deencapsulation.setField(routineLoadJob, "state", RoutineLoadJob.JobState.PAUSED);
-        ErrorReason errorReason = new ErrorReason(InternalErrorCode.INTERNAL_ERR,
-                TransactionState.TxnStatusChangeReason.OFFSET_OUT_OF_RANGE.toString());
-        Deencapsulation.setField(routineLoadJob, "pauseReason", errorReason);
-        Deencapsulation.setField(routineLoadJob, "progress", kafkaProgress);
+    public void testGetShowInfo() throws UserException {
+        {
+            // PAUSE state
+            KafkaRoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
+            Deencapsulation.setField(routineLoadJob, "state", RoutineLoadJob.JobState.PAUSED);
+            ErrorReason errorReason = new ErrorReason(InternalErrorCode.INTERNAL_ERR,
+                    TransactionState.TxnStatusChangeReason.OFFSET_OUT_OF_RANGE.toString());
+            Deencapsulation.setField(routineLoadJob, "pauseReason", errorReason);
 
+            List<String> showInfo = routineLoadJob.getShowInfo();
+            Assert.assertEquals(true, showInfo.stream().filter(entity -> !Strings.isNullOrEmpty(entity))
+                    .anyMatch(entity -> entity.equals(errorReason.toString())));
+        }
+
+        {
+            // Progress
+            KafkaRoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
+
+            Map<Integer, Long> partitionOffsets = Maps.newHashMap();
+            partitionOffsets.put(Integer.valueOf(0), Long.valueOf(1234));
+            KafkaProgress kafkaProgress = new KafkaProgress(partitionOffsets);
+            Deencapsulation.setField(routineLoadJob, "progress", kafkaProgress);
+
+            Map<Integer, Long> partitionOffsetTimestamps = Maps.newHashMap();
+            partitionOffsetTimestamps.put(Integer.valueOf(0), Long.valueOf(1701411708410L));
+            KafkaProgress kafkaTimestampProgress = new KafkaProgress(partitionOffsetTimestamps);
+            Deencapsulation.setField(routineLoadJob, "timestampProgress", kafkaTimestampProgress);
+
+            routineLoadJob.setPartitionOffset(0, 12345);
+
+            List<String> showInfo = routineLoadJob.getShowInfo();
+            Assert.assertEquals("{\"0\":\"12345\"}", showInfo.get(20));
+            //The displayed value is the actual value - 1
+            Assert.assertEquals("{\"0\":\"1233\"}", showInfo.get(14));
+            Assert.assertEquals("{\"0\":\"1701411708409\"}", showInfo.get(15));
+        }
+
+        {
+            // UNSTABLE substate
+            KafkaRoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
+
+            Map<Integer, Long> partitionOffsetTimestamps = Maps.newHashMap();
+            partitionOffsetTimestamps.put(Integer.valueOf(0), Long.valueOf(1701411708410L));
+            KafkaProgress kafkaTimestampProgress = new KafkaProgress(partitionOffsetTimestamps);
+            Deencapsulation.setField(routineLoadJob, "timestampProgress", kafkaTimestampProgress);
+
+            routineLoadJob.updateState(RoutineLoadJob.JobState.RUNNING, null, false);
+            // The job is set unstable due to the progress is too slow.
+            routineLoadJob.updateSubstate();
+
+            List<String> showInfo = routineLoadJob.getShowInfo();
+            Assert.assertEquals("UNSTABLE", showInfo.get(7));
+            // The lag [xxx] of partition [0] exceeds Config.routine_load_unstable_threshold_second [3600]
+            Assert.assertTrue(showInfo.get(16).contains(
+                    "partition [0] exceeds Config.routine_load_unstable_threshold_second [3600]"));
+
+            partitionOffsetTimestamps.put(Integer.valueOf(0), Long.valueOf(System.currentTimeMillis()));
+            kafkaTimestampProgress = new KafkaProgress(partitionOffsetTimestamps);
+            Deencapsulation.setField(routineLoadJob, "timestampProgress", kafkaTimestampProgress);
+            // The job is set stable due to the progress is kept up.
+            routineLoadJob.updateSubstate();
+            showInfo = routineLoadJob.getShowInfo();
+            Assert.assertEquals("RUNNING", showInfo.get(7));
+            Assert.assertEquals("", showInfo.get(16));
+
+            // The job is set stable.
+            routineLoadJob.updateSubstateStable();
+            showInfo = routineLoadJob.getShowInfo();
+            Assert.assertEquals("RUNNING", showInfo.get(7));
+            Assert.assertEquals("", showInfo.get(16));
+        }
+    }
+
+    @Test
+    public void testGetShowInfoSharedData(@Mocked GlobalStateMgr globalStateMgr,
+                                          @Mocked WarehouseManager warehouseManager) throws UserException {
+        new MockUp<RunMode>() {
+            @Mock
+            public RunMode getCurrentRunMode() {
+                return RunMode.SHARED_DATA;
+            }
+        };
+
+        new Expectations() {
+            {
+                globalStateMgr.getWarehouseMgr();
+                result = warehouseManager;
+                warehouseManager.getWarehouse(0L);
+                result = new DefaultWarehouse(0, "default_warehouse");
+                warehouseManager.getWarehouse(1L);
+                result = new Exception("Warehouse id: 1 not exist");
+            }
+        };
+
+        KafkaRoutineLoadJob routineLoadJob = new KafkaRoutineLoadJob();
+        routineLoadJob.setWarehouseId(0L);
         List<String> showInfo = routineLoadJob.getShowInfo();
-        Assert.assertEquals(true, showInfo.stream().filter(entity -> !Strings.isNullOrEmpty(entity))
-                .anyMatch(entity -> entity.equals(errorReason.toString())));
+        Assert.assertEquals(22, showInfo.size());
+        Assert.assertEquals("default_warehouse", showInfo.get(20));
+
+        routineLoadJob.setWarehouseId(1L);
+        showInfo = routineLoadJob.getShowInfo();
+        Assert.assertEquals("Warehouse id: 1 not exist", showInfo.get(20));
     }
 
     @Test
@@ -225,7 +327,8 @@ public class RoutineLoadJobTest {
         new MockUp<KafkaUtil>() {
             @Mock
             public List<Integer> getAllKafkaPartitions(String brokerList, String topic,
-                                                       ImmutableMap<String, String> properties) throws UserException {
+                                                       ImmutableMap<String, String> properties,
+                                                       long warehouseId) throws UserException {
                 return Lists.newArrayList(1, 2, 3);
             }
         };

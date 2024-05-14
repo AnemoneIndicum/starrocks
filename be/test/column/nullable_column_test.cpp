@@ -303,9 +303,13 @@ PARALLEL_TEST(NullableColumnTest, test_xor_checksum) {
         c0->append_datum((int32_t)i);
     }
 
-    int64_t checksum = c0->xor_checksum(0, 1001);
+    int64_t checksum = c0->xor_checksum(0, 1002);
     int64_t expected_checksum = 1001;
 
+    ASSERT_EQ(checksum, expected_checksum);
+
+    checksum = c0->xor_checksum(0, 502);
+    expected_checksum = 501;
     ASSERT_EQ(checksum, expected_checksum);
 }
 
@@ -378,6 +382,21 @@ PARALLEL_TEST(NullableColumnTest, test_replicate) {
     ASSERT_EQ(4, c2->get(4).get_int32());
     ASSERT_EQ(4, c2->get(5).get_int32());
     ASSERT_EQ(4, c2->get(6).get_int32());
+}
+
+PARALLEL_TEST(NullableColumnTest, test_remove_first_n_values) {
+    auto column = NullableColumn::create(Int32Column::create(), NullColumn::create());
+    column->append_datum((int32_t)1);
+    column->append_datum({});
+    column->append_datum((int32_t)4);
+
+    ASSERT_TRUE(column->has_null());
+    column->remove_first_n_values(1);
+    ASSERT_TRUE(column->has_null());
+    column->remove_first_n_values(1);
+    ASSERT_FALSE(column->has_null());
+    column->remove_first_n_values(1);
+    ASSERT_FALSE(column->has_null());
 }
 
 } // namespace starrocks

@@ -27,7 +27,9 @@ import com.starrocks.sql.optimizer.operator.logical.LogicalOlapScanOperator;
 import com.starrocks.sql.optimizer.operator.logical.LogicalScanOperator;
 import com.starrocks.sql.optimizer.operator.pattern.Pattern;
 import com.starrocks.sql.optimizer.operator.scalar.ColumnRefOperator;
+import com.starrocks.sql.optimizer.operator.scalar.ScalarOperator;
 import com.starrocks.sql.optimizer.rule.RuleType;
+import org.apache.commons.collections4.CollectionUtils;
 
 import java.util.Collections;
 import java.util.List;
@@ -44,6 +46,7 @@ public class PruneScanColumnRule extends TransformationRule {
     public static final PruneScanColumnRule ES_SCAN = new PruneScanColumnRule(OperatorType.LOGICAL_ES_SCAN);
     public static final PruneScanColumnRule JDBC_SCAN = new PruneScanColumnRule(OperatorType.LOGICAL_JDBC_SCAN);
     public static final PruneScanColumnRule BINLOG_SCAN = new PruneScanColumnRule(OperatorType.LOGICAL_BINLOG_SCAN);
+    public static final PruneScanColumnRule KUDU_SCAN = new PruneScanColumnRule(OperatorType.LOGICAL_KUDU_SCAN);
 
     public PruneScanColumnRule(OperatorType logicalOperatorType) {
         super(RuleType.TF_PRUNE_OLAP_SCAN_COLUMNS, Pattern.create(logicalOperatorType));
@@ -53,6 +56,7 @@ public class PruneScanColumnRule extends TransformationRule {
     public List<OptExpression> transform(OptExpression input, OptimizerContext context) {
         LogicalScanOperator scanOperator = (LogicalScanOperator) input.getOp();
         ColumnRefSet requiredOutputColumns = context.getTaskContext().getRequiredColumns();
+
 
         // The `outputColumns`s are some columns required but not specified by `requiredOutputColumns`.
         // including columns in predicate or some specialized columns defined by scan operator.
@@ -79,7 +83,7 @@ public class PruneScanColumnRule extends TransformationRule {
                     .collect(Collectors.toMap(identity(), scanOperator.getColRefToColumnMetaMap()::get));
             if (scanOperator instanceof LogicalOlapScanOperator) {
                 LogicalOlapScanOperator olapScanOperator = (LogicalOlapScanOperator) scanOperator;
-
+                fillPrunedPredicateCols(newColumnRefMap, olapScanOperator);
                 LogicalOlapScanOperator.Builder builder = new LogicalOlapScanOperator.Builder();
                 LogicalOlapScanOperator newScanOperator = builder.withOperator(olapScanOperator)
                         .setColRefToColumnMetaMap(newColumnRefMap).build();
@@ -91,6 +95,18 @@ public class PruneScanColumnRule extends TransformationRule {
                         builder.withOperator(scanOperator).setColRefToColumnMetaMap(newColumnRefMap).build();
                 return Lists.newArrayList(new OptExpression(newScanOperator));
             }
+        }
+    }
+
+    private void fillPrunedPredicateCols(Map<ColumnRefOperator, Column> newColumnRefMap,
+                                         LogicalOlapScanOperator olapScanOperator) {
+        if (CollectionUtils.isEmpty(olapScanOperator.getPrunedPartitionPredicates())) {
+            return;
+        }
+
+        for (ScalarOperator predicate : olapScanOperator.getPrunedPartitionPredicates()) {
+            Utils.extractColumnRef(predicate).stream()
+                    .forEach(e -> newColumnRefMap.put(e, olapScanOperator.getColRefToColumnMetaMap().get(e)));
         }
     }
 }

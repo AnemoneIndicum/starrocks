@@ -69,6 +69,7 @@ public class FragmentInstance {
     private final ExecutionFragment execFragment;
 
     private int pipelineDop = ABSENT_PIPELINE_DOP;
+    private int groupExecutionScanDop = ABSENT_PIPELINE_DOP;
 
     private final ComputeNode worker;
 
@@ -214,6 +215,18 @@ public class FragmentInstance {
         this.pipelineDop = pipelineDop;
     }
 
+    public int getGroupExecutionScanDop() {
+        if (groupExecutionScanDop == ABSENT_PIPELINE_DOP) {
+            return getPipelineDop();
+        }
+        return groupExecutionScanDop;
+    }
+
+    public void setGroupExecutionScanDop(int groupExecutionScanDop) {
+        this.groupExecutionScanDop = groupExecutionScanDop;
+    }
+
+
     public FragmentInstanceExecState getExecution() {
         return execution;
     }
@@ -289,7 +302,7 @@ public class FragmentInstance {
 
     public void paddingScanRanges() {
         node2DriverSeqToScanRanges.forEach((scanId, driverSeqToScanRanges) -> {
-            for (int driverSeq = 0; driverSeq < pipelineDop; driverSeq++) {
+            for (int driverSeq = 0; driverSeq < groupExecutionScanDop; driverSeq++) {
                 driverSeqToScanRanges.computeIfAbsent(driverSeq, k -> new ArrayList<>());
             }
         });
@@ -307,12 +320,7 @@ public class FragmentInstance {
                 || dataSink instanceof TableFunctionTableSink)) {
             return dop;
         } else {
-            int sessionVarSinkDop = ConnectContext.get().getSessionVariable().getPipelineSinkDop();
-            if (sessionVarSinkDop > 0) {
-                return Math.min(dop, sessionVarSinkDop);
-            } else {
-                return Math.min(dop, IcebergTableSink.ICEBERG_SINK_MAX_DOP);
-            }
+            return ConnectContext.get().getSessionVariable().getPipelineSinkDop();
         }
     }
 

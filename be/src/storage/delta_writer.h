@@ -119,6 +119,8 @@ public:
 
     const PUniqueId& load_id() const { return _opt.load_id; }
 
+    int64_t index_id() const { return _opt.index_id; }
+
     int64_t partition_id() const;
 
     int64_t node_id() const { return _opt.node_id; }
@@ -136,6 +138,8 @@ public:
     const RowsetWriter* committed_rowset_writer() const { return _rowset_writer.get(); }
 
     const ReplicateToken* replicate_token() const { return _replicate_token.get(); }
+
+    SegmentFlushToken* segment_flush_token() const { return _segment_flush_token.get(); }
 
     // REQUIRE: has successfully `commit()`ed
     const DictColumnsValidMap& global_dict_columns_valid_info() const {
@@ -157,6 +161,11 @@ public:
     int64_t last_write_ts() const { return _last_write_ts; }
 
     int64_t write_buffer_size() const { return _write_buffer_size; }
+
+    static bool is_partial_update_with_sort_key_conflict(const PartialUpdateMode& partial_update_mode,
+                                                         const std::vector<int32_t>& referenced_column_ids,
+                                                         const std::vector<ColumnId>& sort_key_idxes,
+                                                         size_t num_key_columns);
 
 private:
     DeltaWriter(DeltaWriterOptions opt, MemTracker* parent, StorageEngine* storage_engine);
@@ -196,14 +205,15 @@ private:
     // tablet schema owned by delta writer, all write will use this tablet schema
     // it's build from unsafe_tablet_schema_ref（stored when create tablet） and OlapTableSchema
     // every request will have it's own tablet schema so simple schema change can work
-    TabletSchemaSPtr _tablet_schema;
+    TabletSchemaCSPtr _tablet_schema;
 
     std::unique_ptr<FlushToken> _flush_token;
     std::unique_ptr<ReplicateToken> _replicate_token;
+    std::unique_ptr<SegmentFlushToken> _segment_flush_token;
     bool _with_rollback_log;
     // initial value is max value
-    size_t _memtable_buffer_row = -1;
-    bool _partial_schema_with_sort_key = false;
+    size_t _memtable_buffer_row = std::numeric_limits<size_t>::max();
+    bool _partial_schema_with_sort_key_conflict = false;
     std::atomic<bool> _is_immutable = false;
 
     int64_t _last_write_ts = 0;

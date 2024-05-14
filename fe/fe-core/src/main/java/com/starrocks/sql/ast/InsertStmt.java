@@ -20,22 +20,20 @@ import com.google.common.collect.Maps;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.RedirectStatus;
 import com.starrocks.analysis.TableName;
+import com.starrocks.catalog.BlackHoleTable;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.Table;
 import com.starrocks.catalog.TableFunctionTable;
-import com.starrocks.catalog.Type;
+import com.starrocks.qe.SessionVariable;
 import com.starrocks.sql.analyzer.Field;
-import com.starrocks.sql.analyzer.SemanticException;
 import com.starrocks.sql.parser.NodePosition;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkState;
-import static com.starrocks.analysis.OutFileClause.PARQUET_COMPRESSION_TYPE_MAP;
 
 /**
  * Insert into is performed to load data from the result of query stmt.
@@ -62,6 +60,7 @@ public class InsertStmt extends DmlStmt {
     // if targetPartitionNames is not set, add all formal partitions' id of the table into it
     private List<Long> targetPartitionIds = Lists.newArrayList();
     private List<String> targetColumnNames;
+    private boolean usePartialUpdate = false;
     private QueryStatement queryStatement;
     private String label = null;
 
@@ -73,7 +72,6 @@ public class InsertStmt extends DmlStmt {
 
     private Table targetTable;
 
-    private List<Column> targetColumns = Lists.newArrayList();
     private boolean isOverwrite;
     private long overwriteJobId = -1;
 
@@ -92,6 +90,7 @@ public class InsertStmt extends DmlStmt {
 
     // tableFunctionAsTargetTable is true if insert statement is parsed from INSERT INTO FILES(..)
     private final boolean tableFunctionAsTargetTable;
+    private final boolean blackHoleTableAsTargetTable;
     private final Map<String, String> tableFunctionProperties;
 
     public InsertStmt(TableName tblName, PartitionNames targetPartitionNames, String label, List<String> cols,
@@ -110,6 +109,7 @@ public class InsertStmt extends DmlStmt {
         this.isOverwrite = isOverwrite;
         this.tableFunctionAsTargetTable = false;
         this.tableFunctionProperties = null;
+        this.blackHoleTableAsTargetTable = false;
     }
 
     // Ctor for CreateTableAsSelectStmt
@@ -123,6 +123,7 @@ public class InsertStmt extends DmlStmt {
         this.forCTAS = true;
         this.tableFunctionAsTargetTable = false;
         this.tableFunctionProperties = null;
+        this.blackHoleTableAsTargetTable = false;
     }
 
     // Ctor for INSERT INTO FILES(...)
@@ -134,6 +135,19 @@ public class InsertStmt extends DmlStmt {
         this.queryStatement = queryStatement;
         this.tableFunctionAsTargetTable = true;
         this.tableFunctionProperties = tableFunctionProperties;
+        this.blackHoleTableAsTargetTable = false;
+    }
+
+    // Ctor for INSERT INTO blackhole() SELECT ...
+    public InsertStmt(QueryStatement queryStatement, NodePosition pos) {
+        super(pos);
+        this.tblName = new TableName("black_hole_catalog", "black_hole_db", "black_hole_table");
+        this.targetColumnNames = null;
+        this.targetPartitionNames = null;
+        this.queryStatement = queryStatement;
+        this.tableFunctionAsTargetTable = false;
+        this.tableFunctionProperties = null;
+        this.blackHoleTableAsTargetTable = true;
     }
 
     public Table getTargetTable() {
@@ -215,6 +229,14 @@ public class InsertStmt extends DmlStmt {
         return targetColumnNames;
     }
 
+    public void setUsePartialUpdate() {
+        this.usePartialUpdate = true;
+    }
+
+    public boolean usePartialUpdate() {
+        return this.usePartialUpdate;
+    }
+
     public void setTargetPartitionNames(PartitionNames targetPartitionNames) {
         this.targetPartitionNames = targetPartitionNames;
     }
@@ -225,10 +247,6 @@ public class InsertStmt extends DmlStmt {
 
     public List<Long> getTargetPartitionIds() {
         return targetPartitionIds;
-    }
-
-    public void setTargetColumns(List<Column> targetColumns) {
-        this.targetColumns = targetColumns;
     }
 
     public boolean isSpecifyKeyPartition() {
@@ -269,106 +287,29 @@ public class InsertStmt extends DmlStmt {
         return tableFunctionAsTargetTable;
     }
 
+    public boolean useBlackHoleTableAsTargetTable() {
+        return blackHoleTableAsTargetTable;
+    }
+
     public Map<String, String> getTableFunctionProperties() {
         return tableFunctionProperties;
     }
 
-    public Table makeTableFunctionTable() {
-        checkState(tableFunctionAsTargetTable, "tableFunctionAsTargetTable is false");
-        // fetch schema from query
+    private List<Column> collectSelectedFieldsFromQueryStatement() {
         QueryRelation query = getQueryStatement().getQueryRelation();
-        List<Field> allFields = query.getRelationFields().getAllFields();
-        List<Column> columns = allFields.stream().filter(Field::isVisible).map(field -> new Column(field.getName(),
-                field.getType(), field.isNullable())).collect(Collectors.toList());
+        return query.getRelationFields().getAllFields().stream()
+                .filter(Field::isVisible)
+                .map(field -> new Column(field.getName(), field.getType(), field.isNullable()))
+                .collect(Collectors.toList());
+    }
 
-        // parse table function properties
-        Map<String, String> props = getTableFunctionProperties();
-        String single = props.getOrDefault("single", "false");
-        if (!single.equalsIgnoreCase("true") && !single.equalsIgnoreCase("false")) {
-            throw new SemanticException("got invalid parameter \"single\" = \"%s\", expect a boolean value (true or false).",
-                    single);
-        }
+    public Table makeBlackHoleTable() {
+        return new BlackHoleTable(collectSelectedFieldsFromQueryStatement());
+    }
 
-        boolean writeSingleFile = single.equalsIgnoreCase("true");
-        String path = props.get("path");
-        String format = props.get("format");
-        String partitionBy = props.get("partition_by");
-        String compressionType = props.get("compression");
-
-        // validate properties
-        if (path == null) {
-            throw new SemanticException(
-                    "path is a mandatory property. \"path\" = \"s3://path/to/your/location/\"");
-        }
-
-        if (format == null) {
-            throw new SemanticException("format is a mandatory property. " +
-                    "Use \"path\" = \"parquet\" as only parquet format is supported now");
-        }
-
-        if (!format.equalsIgnoreCase("parquet")) {
-            throw new SemanticException("use \"path\" = \"parquet\", as only parquet format is supported now");
-        }
-
-        if (compressionType == null) {
-            throw new SemanticException("compression is a mandatory property. " +
-                    "Use \"compression\" = \"your_chosen_compression_type\". Supported compression types are" +
-                    "(uncompressed, gzip, brotli, zstd, lz4).");
-        }
-
-        if (!PARQUET_COMPRESSION_TYPE_MAP.containsKey(compressionType)) {
-            throw new SemanticException("compression type " + compressionType + " is not supported. " +
-                    "Use any of (uncompressed, gzip, brotli, zstd, lz4).");
-        }
-
-        if (writeSingleFile && partitionBy != null) {
-            throw new SemanticException("cannot use partition_by and single simultaneously.");
-        }
-
-        if (writeSingleFile) {
-            return new TableFunctionTable(path, format, compressionType, columns, null, true, props);
-        }
-
-        if (partitionBy == null) {
-            // prepend `data_` if path ends with forward slash
-            if (path.endsWith("/")) {
-                path += "data_";
-            }
-            return new TableFunctionTable(path, format, compressionType, columns, null, false, props);
-        }
-
-        // extra validation for using partitionBy
-        if (!path.endsWith("/")) {
-            throw new SemanticException(
-                    "If partition_by is used, path should be a directory ends with forward slash(/).");
-        }
-
-        List<String> columnNames = columns.stream().map(Column::getName).collect(Collectors.toList());
-
-        // parse and validate partition columns
-        List<String> partitionColumnNames = Arrays.asList(partitionBy.split(","));
-        partitionColumnNames.replaceAll(String::trim);
-        partitionColumnNames = partitionColumnNames.stream().distinct().collect(Collectors.toList());
-
-        List<String> unmatchedPartitionColumnNames = partitionColumnNames.stream().filter(col ->
-                !columnNames.contains(col)).collect(Collectors.toList());
-        if (!unmatchedPartitionColumnNames.isEmpty()) {
-            throw new SemanticException("partition columns expected to be a subset of " + columnNames +
-                    ", but got extra columns: " + unmatchedPartitionColumnNames);
-        }
-
-        List<Integer> partitionColumnIDs = partitionColumnNames.stream().map(columnNames::indexOf).collect(
-                Collectors.toList());
-
-        for (Integer partitionColumnID : partitionColumnIDs) {
-            Column partitionColumn = columns.get(partitionColumnID);
-            Type type = partitionColumn.getType();
-            if (type.isBoolean() || type.isIntegerType() || type.isDateType() || type.isStringType()) {
-                continue;
-            }
-            throw new SemanticException("partition column does not support type of " + type);
-        }
-
-        return new TableFunctionTable(path, format, compressionType, columns, partitionColumnIDs, false, props);
+    public Table makeTableFunctionTable(SessionVariable sessionVariable) {
+        checkState(tableFunctionAsTargetTable, "tableFunctionAsTargetTable is false");
+        List<Column> columns = collectSelectedFieldsFromQueryStatement();
+        return new TableFunctionTable(columns, getTableFunctionProperties(), sessionVariable);
     }
 }

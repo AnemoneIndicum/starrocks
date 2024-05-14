@@ -16,12 +16,12 @@
 package com.starrocks.catalog;
 
 import com.google.common.base.Strings;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Range;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import com.google.gson.annotations.SerializedName;
-import com.starrocks.analysis.IndexDef;
 import com.starrocks.catalog.DistributionInfo.DistributionInfoType;
 import com.starrocks.catalog.MaterializedIndex.IndexState;
 import com.starrocks.catalog.Replica.ReplicaState;
@@ -32,6 +32,7 @@ import com.starrocks.meta.MetaContext;
 import com.starrocks.server.GlobalStateMgr;
 import com.starrocks.sql.ast.DistributionDesc;
 import com.starrocks.sql.ast.HashDistributionDesc;
+import com.starrocks.sql.ast.IndexDef;
 import com.starrocks.system.Backend;
 import com.starrocks.system.Backend.BackendState;
 import com.starrocks.system.SystemInfoService;
@@ -58,6 +59,7 @@ import java.io.DataInputStream;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -76,6 +78,13 @@ public class ExternalOlapTable extends OlapTable {
     private static final String JSON_KEY_SOURCE_TABLE_ID = "source_table_id";
     private static final String JSON_KEY_SOURCE_TABLE_NAME = "source_table_name";
     private static final String JSON_KEY_SOURCE_TABLE_TYPE = "source_table_type";
+
+    private static final String PROPERTIES_HOST = "host";
+    private static final String PROPERTIES_PORT = "port";
+    private static final String PROPERTIES_USER = "user";
+    private static final String PROPERTIES_PASSWORD = "password";
+    private static final String PROPERTIES_DATABASE = "database";
+    private static final String PROPERTIES_TABLE = "table";
 
     public class ExternalTableInfo {
         // remote doris cluster fe addr
@@ -195,13 +204,13 @@ public class ExternalOlapTable extends OlapTable {
                         + "they are: host, port, user, password, database and table");
             }
 
-            host = properties.get("host");
+            host = properties.get(PROPERTIES_HOST);
             if (Strings.isNullOrEmpty(host)) {
                 throw new DdlException("Host of external table is null. "
                         + "Please add properties('host'='xxx.xxx.xxx.xxx') when create table");
             }
 
-            String portStr = properties.get("port");
+            String portStr = properties.get(PROPERTIES_PORT);
             if (Strings.isNullOrEmpty(portStr)) {
                 // Maybe null pointer or number convert
                 throw new DdlException("miss port of external table is null. "
@@ -214,25 +223,25 @@ public class ExternalOlapTable extends OlapTable {
                         + "Please add properties('port'='3306') when create table");
             }
 
-            user = properties.get("user");
+            user = properties.get(PROPERTIES_USER);
             if (Strings.isNullOrEmpty(user)) {
                 throw new DdlException("User of external table is null. "
                         + "Please add properties('user'='root') when create table");
             }
 
-            password = properties.get("password");
+            password = properties.get(PROPERTIES_PASSWORD);
             if (password == null) {
                 throw new DdlException("Password of external table is null. "
                         + "Please add properties('password'='xxxx') when create table");
             }
 
-            dbName = properties.get("database");
+            dbName = properties.get(PROPERTIES_DATABASE);
             if (Strings.isNullOrEmpty(dbName)) {
                 throw new DdlException("Database of external table is null. "
                         + "Please add properties('database'='xxxx') when create table");
             }
 
-            tableName = properties.get("table");
+            tableName = properties.get(PROPERTIES_TABLE);
             if (Strings.isNullOrEmpty(tableName)) {
                 throw new DdlException("external table name missing."
                         + "Please add properties('table'='xxxx') when create table");
@@ -371,7 +380,6 @@ public class ExternalOlapTable extends OlapTable {
             return;
         }
 
-        clusterId = meta.getCluster_id();
         externalTableInfo.setDbId(meta.getDb_id());
         externalTableInfo.setTableId(meta.getTable_id());
         if (meta.isSetTable_type()) {
@@ -398,7 +406,8 @@ public class ExternalOlapTable extends OlapTable {
             List<Index> indexList = new ArrayList<>();
             for (TIndexInfo indexInfo : meta.getIndex_infos()) {
                 Index index = new Index(indexInfo.getIndex_name(), indexInfo.getColumns(),
-                        IndexDef.IndexType.valueOf(indexInfo.getIndex_type()), indexInfo.getComment());
+                        IndexDef.IndexType.valueOf(indexInfo.getIndex_type()), indexInfo.getComment(),
+                        Collections.emptyMap());
                 indexList.add(index);
             }
             indexes = new TableIndexes(indexList);
@@ -573,7 +582,7 @@ public class ExternalOlapTable extends OlapTable {
         }
         long endOfTabletMetaBuild = System.currentTimeMillis();
 
-        SystemInfoService systemInfoService = GlobalStateMgr.getCurrentState().getOrCreateSystemInfo(clusterId);
+        SystemInfoService systemInfoService = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo();
         for (TBackendMeta backendMeta : backendMetas) {
             Backend backend = systemInfoService.getBackend(backendMeta.getBackend_id());
             if (backend == null) {
@@ -588,6 +597,7 @@ public class ExternalOlapTable extends OlapTable {
                 systemInfoService.addBackend(backend);
             } else {
                 backend.setId(backendMeta.getBackend_id());
+                backend.setHost(backendMeta.getHost());
                 backend.setBePort(backendMeta.getBe_port());
                 backend.setHttpPort(backendMeta.getHttp_port());
                 backend.setBrpcPort(backendMeta.getRpc_port());
@@ -603,5 +613,17 @@ public class ExternalOlapTable extends OlapTable {
                 endOfPartitionBuild - start, endOfIndexMetaBuild - endOfPartitionBuild,
                 endOfSchemaRebuild - endOfIndexMetaBuild, endOfTabletMetaBuild - endOfSchemaRebuild,
                 System.currentTimeMillis() - start);
+    }
+
+    @Override
+    public Map<String, String> getUniqueProperties() {
+        Map<String, String> properties = Maps.newHashMap();
+        properties.put(PROPERTIES_HOST, getSourceTableHost());
+        properties.put(PROPERTIES_PORT, String.valueOf(getSourceTablePort()));
+        properties.put(PROPERTIES_USER, getSourceTableUser());
+        properties.put(PROPERTIES_PASSWORD, getSourceTablePassword());
+        properties.put(PROPERTIES_DATABASE, getSourceTableDbName());
+        properties.put(PROPERTIES_TABLE, getSourceTableName());
+        return properties;
     }
 }

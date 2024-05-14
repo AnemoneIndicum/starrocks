@@ -89,6 +89,9 @@ TransactionManagerAction::TransactionManagerAction(ExecEnv* exec_env) : _exec_en
 TransactionManagerAction::~TransactionManagerAction() = default;
 
 static void _send_reply(HttpRequest* req, const std::string& str) {
+    if (config::enable_stream_load_verbose_log) {
+        LOG(INFO) << "transaction streaming load response: " << str;
+    }
     HttpChannel::send_reply(req, str);
 }
 
@@ -177,10 +180,15 @@ void TransactionStreamLoadAction::handle(HttpRequest* req) {
 
     auto resp = _exec_env->transaction_mgr()->_build_reply(TXN_LOAD, ctx);
     ctx->lock.unlock();
+
     _send_reply(req, resp);
 }
 
 int TransactionStreamLoadAction::on_header(HttpRequest* req) {
+    if (config::enable_stream_load_verbose_log) {
+        LOG(INFO) << "transaction streaming load request: " << req->debug_string();
+    }
+
     const auto& label = req->header(HTTP_LABEL_KEY);
     if (label.empty()) {
         _send_error_reply(req, Status::InvalidArgument(fmt::format("Invalid label {}", req->header(HTTP_LABEL_KEY))));
@@ -313,6 +321,10 @@ Status TransactionStreamLoadAction::_parse_request(HttpRequest* http_req, Stream
     request.formatType = ctx->format;
     request.__set_loadId(ctx->id.to_thrift());
     request.fileType = TFileType::FILE_STREAM;
+    auto backend_id = get_backend_id();
+    if (backend_id.has_value()) {
+        request.__set_backend_id(backend_id.value());
+    }
 
     if (!http_req->header(HTTP_COLUMNS).empty()) {
         request.__set_columns(http_req->header(HTTP_COLUMNS));
@@ -415,6 +427,16 @@ Status TransactionStreamLoadAction::_parse_request(HttpRequest* http_req, Stream
         request.__set_timeout(ctx->timeout_second);
     }
 
+    if (!http_req->header(HttpHeaders::CONTENT_ENCODING).empty() && !http_req->header(HTTP_COMPRESSION).empty()) {
+        return Status::InvalidArgument("Only one of http header content-encoding and compression can be set");
+    }
+
+    if (!http_req->header(HttpHeaders::CONTENT_ENCODING).empty()) {
+        request.__set_payload_compression_type(http_req->header(HttpHeaders::CONTENT_ENCODING));
+    } else if (!http_req->header(HTTP_COMPRESSION).empty()) {
+        request.__set_payload_compression_type(http_req->header(HTTP_COMPRESSION));
+    }
+
     return Status::OK();
 }
 
@@ -461,7 +483,7 @@ Status TransactionStreamLoadAction::_exec_plan_fragment(HttpRequest* http_req, S
 #endif
     Status plan_status(ctx->put_result.status);
     if (!plan_status.ok()) {
-        LOG(WARNING) << "plan streaming load failed. errmsg=" << plan_status.get_error_msg() << " " << ctx->brief();
+        LOG(WARNING) << "plan streaming load failed. errmsg=" << plan_status.message() << " " << ctx->brief();
         return plan_status;
     }
     VLOG(3) << "params is " << apache::thrift::ThriftDebugString(ctx->put_result.params);

@@ -16,6 +16,7 @@ package com.starrocks.http;
 
 import com.starrocks.catalog.Database;
 import com.starrocks.catalog.OlapTable;
+import com.starrocks.common.Config;
 import com.starrocks.server.GlobalStateMgr;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -41,12 +42,14 @@ public class ShowDataActionTest extends StarRocksHttpTestCase {
         expectedSize = table.getDataSize();
 
         // inject our test db
-        ConcurrentHashMap<String, Database> fullNameToDb = GlobalStateMgr.getCurrentState().getFullNameToDb();
+        ConcurrentHashMap<String, Database> fullNameToDb = GlobalStateMgr.getCurrentState()
+                .getLocalMetastore().getFullNameToDb();
         fullNameToDb.put(SHOW_DATA_DB_NAME, db);
     }
 
     @Test
     public void testGetShowData() throws IOException {
+        Config.http_slow_request_threshold_ms = 0;
         Request request = new Request.Builder()
                 .get()
                 .addHeader("Authorization", rootAuth)

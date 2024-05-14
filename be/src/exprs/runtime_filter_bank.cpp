@@ -14,6 +14,7 @@
 
 #include "exprs/runtime_filter_bank.h"
 
+#include <memory>
 #include <thread>
 
 #include "column/column.h"
@@ -240,6 +241,7 @@ Status RuntimeFilterProbeDescriptor::init(ObjectPool* pool, const TRuntimeFilter
     _join_mode = desc.build_join_mode;
     _is_topn_filter = desc.__isset.filter_type && desc.filter_type == TRuntimeFilterBuildType::TOPN_FILTER;
     _skip_wait = _is_topn_filter;
+    _is_group_colocate_rf = desc.__isset.build_from_group_execution && desc.build_from_group_execution;
 
     bool not_found = true;
     if (desc.__isset.plan_node_id_to_target_expr) {
@@ -273,7 +275,7 @@ Status RuntimeFilterProbeDescriptor::init(int32_t filter_id, ExprContext* probe_
     return Status::OK();
 }
 
-Status RuntimeFilterProbeDescriptor::prepare(RuntimeState* state, const RowDescriptor& row_desc, RuntimeProfile* p) {
+Status RuntimeFilterProbeDescriptor::prepare(RuntimeState* state, RuntimeProfile* p) {
     if (_probe_expr_ctx != nullptr) {
         RETURN_IF_ERROR(_probe_expr_ctx->prepare(state));
     }
@@ -346,13 +348,12 @@ RuntimeFilterProbeCollector::RuntimeFilterProbeCollector(RuntimeFilterProbeColle
           _eval_context(that._eval_context),
           _plan_node_id(that._plan_node_id) {}
 
-Status RuntimeFilterProbeCollector::prepare(RuntimeState* state, const RowDescriptor& row_desc,
-                                            RuntimeProfile* profile) {
+Status RuntimeFilterProbeCollector::prepare(RuntimeState* state, RuntimeProfile* profile) {
     _runtime_profile = profile;
     _runtime_state = state;
     for (auto& it : _descriptors) {
         RuntimeFilterProbeDescriptor* rf_desc = it.second;
-        RETURN_IF_ERROR(rf_desc->prepare(state, row_desc, profile));
+        RETURN_IF_ERROR(rf_desc->prepare(state, profile));
     }
     if (state != nullptr) {
         const TQueryOptions& options = state->query_options();
@@ -396,7 +397,7 @@ void RuntimeFilterProbeCollector::do_evaluate(Chunk* chunk, RuntimeBloomFilterEv
 
     for (auto& kv : seletivity_map) {
         RuntimeFilterProbeDescriptor* rf_desc = kv.second;
-        const JoinRuntimeFilter* filter = rf_desc->runtime_filter();
+        const JoinRuntimeFilter* filter = rf_desc->runtime_filter(eval_context.driver_sequence);
         if (filter == nullptr || filter->always_true()) {
             continue;
         }
@@ -417,6 +418,63 @@ void RuntimeFilterProbeCollector::do_evaluate(Chunk* chunk, RuntimeBloomFilterEv
         }
     }
 }
+
+void RuntimeFilterProbeCollector::do_evaluate_partial_chunk(Chunk* partial_chunk,
+                                                            RuntimeBloomFilterEvalContext& eval_context) {
+    auto& selection = eval_context.running_context.selection;
+    eval_context.running_context.use_merged_selection = false;
+    eval_context.running_context.compatibility =
+            _runtime_state->func_version() <= 3 || !_runtime_state->enable_pipeline_engine();
+
+    // since partial chunk is currently very lightweight (a bunch of const columns), use every runtime filter if possible
+    // without computing each rf's selectivity
+    for (auto kv : _descriptors) {
+        RuntimeFilterProbeDescriptor* rf_desc = kv.second;
+        const JoinRuntimeFilter* filter = rf_desc->runtime_filter(eval_context.driver_sequence);
+        if (filter == nullptr || filter->always_true()) {
+            continue;
+        }
+
+        auto is_existent_slot_ref = [&](ExprContext* expr) {
+            auto* root = expr->root();
+            if (!root->is_slotref()) {
+                return false;
+            }
+
+            auto* col_ref = down_cast<ColumnRef*>(root);
+            return partial_chunk->is_slot_exist(col_ref->slot_id());
+        };
+
+        auto* probe_expr = rf_desc->probe_expr_ctx();
+        auto* partition_by_exprs = rf_desc->partition_by_expr_contexts();
+
+        bool can_use_rf_on_partial_chunk = is_existent_slot_ref(probe_expr);
+        for (auto* part_by_expr : *partition_by_exprs) {
+            can_use_rf_on_partial_chunk &= is_existent_slot_ref(part_by_expr);
+        }
+
+        // skip runtime filter that references a non-existent column for the partial chunk
+        if (!can_use_rf_on_partial_chunk) {
+            continue;
+        }
+
+        ColumnPtr column = EVALUATE_NULL_IF_ERROR(probe_expr, probe_expr->root(), partial_chunk);
+        // for colocate grf
+        compute_hash_values(partial_chunk, column.get(), rf_desc, eval_context);
+        filter->evaluate(column.get(), &eval_context.running_context);
+
+        auto true_count = SIMD::count_nonzero(selection);
+        eval_context.run_filter_nums += 1;
+
+        if (true_count == 0) {
+            partial_chunk->set_num_rows(0);
+            return;
+        } else {
+            partial_chunk->filter(selection);
+        }
+    }
+}
+
 void RuntimeFilterProbeCollector::init_counter() {
     _eval_context.join_runtime_filter_timer = ADD_TIMER(_runtime_profile, "JoinRuntimeFilterTime");
     _eval_context.join_runtime_filter_hash_timer = ADD_TIMER(_runtime_profile, "JoinRuntimeFilterHashTime");
@@ -452,12 +510,29 @@ void RuntimeFilterProbeCollector::evaluate(Chunk* chunk, RuntimeBloomFilterEvalC
     }
 }
 
+void RuntimeFilterProbeCollector::evaluate_partial_chunk(Chunk* partial_chunk,
+                                                         RuntimeBloomFilterEvalContext& eval_context) {
+    if (_descriptors.empty()) return;
+    size_t before = partial_chunk->num_rows();
+    if (before == 0) return;
+
+    {
+        SCOPED_TIMER(eval_context.join_runtime_filter_timer);
+        eval_context.join_runtime_filter_input_counter->update(before);
+        eval_context.run_filter_nums = 0;
+        do_evaluate_partial_chunk(partial_chunk, eval_context);
+        size_t after = partial_chunk->num_rows();
+        eval_context.join_runtime_filter_output_counter->update(after);
+        eval_context.join_runtime_filter_eval_counter->update(eval_context.run_filter_nums);
+    }
+}
+
 void RuntimeFilterProbeCollector::compute_hash_values(Chunk* chunk, Column* column,
                                                       RuntimeFilterProbeDescriptor* rf_desc,
                                                       RuntimeBloomFilterEvalContext& eval_context) {
     // TODO: Hash values will be computed multi times for runtime filters with the same partition_by_exprs.
     SCOPED_TIMER(eval_context.join_runtime_filter_hash_timer);
-    const JoinRuntimeFilter* filter = rf_desc->runtime_filter();
+    const JoinRuntimeFilter* filter = rf_desc->runtime_filter(eval_context.driver_sequence);
     DCHECK(filter);
     if (filter->num_hash_partitions() == 0) {
         return;
@@ -490,7 +565,7 @@ void RuntimeFilterProbeCollector::update_selectivity(Chunk* chunk, RuntimeBloomF
     seletivity_map.clear();
     for (auto& kv : _descriptors) {
         RuntimeFilterProbeDescriptor* rf_desc = kv.second;
-        const JoinRuntimeFilter* filter = rf_desc->runtime_filter();
+        const JoinRuntimeFilter* filter = rf_desc->runtime_filter(eval_context.driver_sequence);
         if (filter == nullptr || filter->always_true()) {
             continue;
         }
@@ -542,7 +617,8 @@ void RuntimeFilterProbeCollector::update_selectivity(Chunk* chunk, RuntimeBloomF
     }
 }
 
-void RuntimeFilterProbeCollector::push_down(RuntimeFilterProbeCollector* parent, const std::vector<TupleId>& tuple_ids,
+void RuntimeFilterProbeCollector::push_down(const RuntimeState* state, TPlanNodeId target_plan_node_id,
+                                            RuntimeFilterProbeCollector* parent, const std::vector<TupleId>& tuple_ids,
                                             std::set<TPlanNodeId>& local_rf_waiting_set) {
     if (this == parent) return;
     auto iter = parent->_descriptors.begin();
@@ -552,7 +628,8 @@ void RuntimeFilterProbeCollector::push_down(RuntimeFilterProbeCollector* parent,
             ++iter;
             continue;
         }
-        if (desc->is_bound(tuple_ids)) {
+        if (desc->is_bound(tuple_ids) && !(state->broadcast_join_right_offsprings().contains(target_plan_node_id) &&
+                                           state->shuffle_hash_bucket_rf_ids().contains(desc->filter_id()))) {
             add_descriptor(desc);
             if (desc->is_local()) {
                 local_rf_waiting_set.insert(desc->build_plan_node_id());
@@ -581,6 +658,7 @@ void RuntimeFilterProbeCollector::add_descriptor(RuntimeFilterProbeDescriptor* d
     _descriptors[desc->filter_id()] = desc;
 }
 
+// only used in non-pipeline mode
 void RuntimeFilterProbeCollector::wait(bool on_scan_node) {
     if (_descriptors.empty()) return;
 
@@ -602,7 +680,7 @@ void RuntimeFilterProbeCollector::wait(bool on_scan_node) {
     while (wait_time >= 0 && !wait_list.empty()) {
         auto it = wait_list.begin();
         while (it != wait_list.end()) {
-            auto* rf = (*it)->runtime_filter();
+            auto* rf = (*it)->runtime_filter(-1);
             // find runtime filter in cache.
             if (rf == nullptr) {
                 JoinRuntimeFilterPtr t = _runtime_state->exec_env()->runtime_filter_cache()->get(
@@ -630,7 +708,7 @@ void RuntimeFilterProbeCollector::wait(bool on_scan_node) {
         for (const auto& it : _descriptors) {
             auto* rf = it.second;
             int filter_id = rf->filter_id();
-            bool ready = (rf->runtime_filter() != nullptr);
+            bool ready = (rf->runtime_filter(-1) != nullptr);
             VLOG_FILE << "RuntimeFilterCollector::wait start. filter_id = " << filter_id
                       << ", plan_node_id = " << _plan_node_id
                       << ", finst_id = " << _runtime_state->fragment_instance_id()

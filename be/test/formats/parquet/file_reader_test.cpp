@@ -20,6 +20,7 @@
 #include <random>
 #include <set>
 
+#include "block_cache/block_cache.h"
 #include "column/column_helper.h"
 #include "column/fixed_length_column.h"
 #include "common/logging.h"
@@ -30,6 +31,7 @@
 #include "formats/parquet/metadata.h"
 #include "formats/parquet/page_reader.h"
 #include "formats/parquet/parquet_test_util/util.h"
+#include "formats/parquet/parquet_ut_base.h"
 #include "fs/fs.h"
 #include "io/shared_buffered_input_stream.h"
 #include "runtime/descriptor_helper.h"
@@ -223,6 +225,9 @@ protected:
 
     std::string _file_binary_path = "./be/test/exec/test_data/parquet_scanner/file_reader_test_binary.parquet";
 
+    // The length of binary type is greater than 4k, and there is no min max statistics
+    std::string _file_no_min_max_stats_path = "./be/test/exec/test_data/parquet_scanner/no_min_max_statistics.parquet";
+
     std::shared_ptr<RowDescriptor> _row_desc = nullptr;
     RuntimeState* _runtime_state = nullptr;
     ObjectPool _pool;
@@ -253,7 +258,7 @@ HdfsScannerContext* FileReaderTest::_create_file1_base_context() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file1_path, 1024));
+    ctx->scan_range = (_create_scan_range(_file1_path, 1024));
 
     return ctx;
 }
@@ -271,7 +276,7 @@ HdfsScannerContext* FileReaderTest::_create_context_for_partition() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file1_path, 1024));
+    ctx->scan_range = (_create_scan_range(_file1_path, 1024));
     auto column = ColumnHelper::create_const_column<LogicalType::TYPE_INT>(1, 1);
     ctx->partition_values.emplace_back(column);
 
@@ -291,7 +296,7 @@ HdfsScannerContext* FileReaderTest::_create_context_for_not_exist() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file1_path, 1024));
+    ctx->scan_range = (_create_scan_range(_file1_path, 1024));
 
     return ctx;
 }
@@ -309,7 +314,7 @@ HdfsScannerContext* FileReaderTest::_create_file2_base_context() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file2_path, 850));
+    ctx->scan_range = (_create_scan_range(_file2_path, 850));
 
     return ctx;
 }
@@ -387,7 +392,7 @@ HdfsScannerContext* FileReaderTest::_create_file3_base_context() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file3_path));
+    ctx->scan_range = (_create_scan_range(_file3_path));
 
     return ctx;
 }
@@ -420,7 +425,7 @@ HdfsScannerContext* FileReaderTest::_create_file4_base_context() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file4_path));
+    ctx->scan_range = (_create_scan_range(_file4_path));
 
     return ctx;
 }
@@ -441,7 +446,7 @@ HdfsScannerContext* FileReaderTest::_create_file5_base_context() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file5_path));
+    ctx->scan_range = (_create_scan_range(_file5_path));
 
     return ctx;
 }
@@ -477,7 +482,7 @@ HdfsScannerContext* FileReaderTest::_create_file6_base_context() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file6_path));
+    ctx->scan_range = (_create_scan_range(_file6_path));
 
     return ctx;
 }
@@ -501,7 +506,7 @@ HdfsScannerContext* FileReaderTest::_create_file_map_char_key_context() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_map_char_key_path));
+    ctx->scan_range = (_create_scan_range(_file_map_char_key_path));
 
     return ctx;
 }
@@ -533,7 +538,7 @@ HdfsScannerContext* FileReaderTest::_create_file_map_base_context() {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_map_path));
+    ctx->scan_range = (_create_scan_range(_file_map_path));
 
     return ctx;
 }
@@ -568,7 +573,7 @@ HdfsScannerContext* FileReaderTest::_create_file_map_partial_materialize_context
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_map_path));
+    ctx->scan_range = (_create_scan_range(_file_map_path));
 
     return ctx;
 }
@@ -589,7 +594,7 @@ HdfsScannerContext* FileReaderTest::_create_file_random_read_context(const std::
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(file_path));
+    ctx->scan_range = (_create_scan_range(file_path));
 
     return ctx;
 }
@@ -621,7 +626,7 @@ HdfsScannerContext* FileReaderTest::_create_file_struct_in_struct_read_context(c
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(file_path));
+    ctx->scan_range = (_create_scan_range(file_path));
 
     return ctx;
 }
@@ -658,51 +663,15 @@ HdfsScannerContext* FileReaderTest::_create_file_struct_in_struct_prune_and_no_o
     ctx->tuple_desc = tupleDescriptor;
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
     ctx->materialized_columns[1].decode_needed = false;
-    ctx->scan_ranges.emplace_back(_create_scan_range(file_path));
+    ctx->scan_range = (_create_scan_range(file_path));
 
     return ctx;
 }
 
 void FileReaderTest::_create_int_conjunct_ctxs(TExprOpcode::type opcode, SlotId slot_id, int value,
                                                std::vector<ExprContext*>* conjunct_ctxs) {
-    std::vector<TExprNode> nodes;
-
-    TExprNode node0;
-    node0.node_type = TExprNodeType::BINARY_PRED;
-    node0.opcode = opcode;
-    node0.child_type = TPrimitiveType::INT;
-    node0.num_children = 2;
-    node0.__isset.opcode = true;
-    node0.__isset.child_type = true;
-    node0.type = gen_type_desc(TPrimitiveType::BOOLEAN);
-    nodes.emplace_back(node0);
-
-    TExprNode node1;
-    node1.node_type = TExprNodeType::SLOT_REF;
-    node1.type = gen_type_desc(TPrimitiveType::INT);
-    node1.num_children = 0;
-    TSlotRef t_slot_ref = TSlotRef();
-    t_slot_ref.slot_id = slot_id;
-    t_slot_ref.tuple_id = 0;
-    node1.__set_slot_ref(t_slot_ref);
-    node1.is_nullable = true;
-    nodes.emplace_back(node1);
-
-    TExprNode node2;
-    node2.node_type = TExprNodeType::INT_LITERAL;
-    node2.type = gen_type_desc(TPrimitiveType::INT);
-    node2.num_children = 0;
-    TIntLiteral int_literal;
-    int_literal.value = value;
-    node2.__set_int_literal(int_literal);
-    node2.is_nullable = false;
-    nodes.emplace_back(node2);
-
-    TExpr t_expr;
-    t_expr.nodes = nodes;
-
     std::vector<TExpr> t_conjuncts;
-    t_conjuncts.emplace_back(t_expr);
+    ParquetUTBase::append_int_conjunct(opcode, slot_id, value, &t_conjuncts);
 
     ASSERT_OK(Expr::create_expr_trees(&_pool, t_conjuncts, conjunct_ctxs, nullptr));
     ASSERT_OK(Expr::prepare(*conjunct_ctxs, _runtime_state));
@@ -931,7 +900,7 @@ ChunkPtr FileReaderTest::_create_chunk_for_not_exist() {
 TEST_F(FileReaderTest, TestInit) {
     auto file = _create_file(_file1_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file1_path));
+                                                    std::filesystem::file_size(_file1_path), 100000);
     // init
     auto* ctx = _create_file1_base_context();
     Status status = file_reader->init(ctx);
@@ -941,7 +910,7 @@ TEST_F(FileReaderTest, TestInit) {
 TEST_F(FileReaderTest, TestGetNext) {
     auto file = _create_file(_file1_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file1_path));
+                                                    std::filesystem::file_size(_file1_path), 100000);
     // init
     auto* ctx = _create_file1_base_context();
     Status status = file_reader->init(ctx);
@@ -961,8 +930,9 @@ TEST_F(FileReaderTest, TestGetNextWithSkipID) {
     int64_t ids[] = {1};
     std::set<int64_t> need_skip_rowids(ids, ids + 1);
     auto file = _create_file(_file1_path);
-    auto file_reader = std::make_shared<FileReader>(
-            config::vector_chunk_size, file.get(), std::filesystem::file_size(_file1_path), nullptr, &need_skip_rowids);
+    auto file_reader =
+            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(_file1_path),
+                                         0, nullptr, &need_skip_rowids);
     // init
     auto* ctx = _create_file1_base_context();
     Status status = file_reader->init(ctx);
@@ -981,7 +951,7 @@ TEST_F(FileReaderTest, TestGetNextWithSkipID) {
 TEST_F(FileReaderTest, TestGetNextPartition) {
     auto file = _create_file(_file1_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file1_path));
+                                                    std::filesystem::file_size(_file1_path), 100000);
     // init
     auto* ctx = _create_context_for_partition();
     Status status = file_reader->init(ctx);
@@ -1000,7 +970,7 @@ TEST_F(FileReaderTest, TestGetNextPartition) {
 TEST_F(FileReaderTest, TestGetNextEmpty) {
     auto file = _create_file(_file1_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file1_path));
+                                                    std::filesystem::file_size(_file1_path), 100000);
     // init
     auto* ctx = _create_context_for_not_exist();
     Status status = file_reader->init(ctx);
@@ -1019,7 +989,7 @@ TEST_F(FileReaderTest, TestGetNextEmpty) {
 TEST_F(FileReaderTest, TestMinMaxConjunct) {
     auto file = _create_file(_file2_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file2_path), nullptr);
+                                                    std::filesystem::file_size(_file2_path), 100000, nullptr);
     // init
     auto* ctx = _create_context_for_min_max();
     Status status = file_reader->init(ctx);
@@ -1041,7 +1011,7 @@ TEST_F(FileReaderTest, TestMinMaxConjunct) {
 TEST_F(FileReaderTest, TestFilterFile) {
     auto file = _create_file(_file2_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file2_path));
+                                                    std::filesystem::file_size(_file2_path), 100000);
     // init
     auto* ctx = _create_context_for_filter_file();
     Status status = file_reader->init(ctx);
@@ -1057,8 +1027,16 @@ TEST_F(FileReaderTest, TestFilterFile) {
 
 TEST_F(FileReaderTest, TestGetNextDictFilter) {
     auto file = _create_file(_file2_path);
-    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file2_path));
+    std::shared_ptr<io::SeekableInputStream> input_stream = file->stream();
+    std::shared_ptr<io::SharedBufferedInputStream> shared_buffered_input_stream =
+            std::make_shared<io::SharedBufferedInputStream>(input_stream, file->filename(),
+                                                            std::filesystem::file_size(_file2_path));
+
+    auto wrap_file = std::make_unique<RandomAccessFile>(shared_buffered_input_stream, file->filename());
+
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, wrap_file.get(),
+                                                    std::filesystem::file_size(_file2_path), 100000,
+                                                    shared_buffered_input_stream.get());
     // init
     auto* ctx = _create_context_for_dict_filter();
     Status status = file_reader->init(ctx);
@@ -1068,7 +1046,7 @@ TEST_F(FileReaderTest, TestGetNextDictFilter) {
     {
         ASSERT_EQ(1, file_reader->_row_group_readers[0]->_dict_column_indices.size());
         int col_idx = file_reader->_row_group_readers[0]->_dict_column_indices[0];
-        ASSERT_EQ(2, file_reader->_row_group_readers[0]->_param.read_cols[col_idx].slot_id);
+        ASSERT_EQ(2, file_reader->_row_group_readers[0]->_param.read_cols[col_idx].slot_id());
     }
 
     // get next
@@ -1082,12 +1060,14 @@ TEST_F(FileReaderTest, TestGetNextDictFilter) {
 
     status = file_reader->get_next(&chunk);
     ASSERT_TRUE(status.is_end_of_file());
+    ASSERT_EQ(1, shared_buffered_input_stream->direct_io_count());
+    ASSERT_EQ(1, shared_buffered_input_stream->shared_io_count());
 }
 
 TEST_F(FileReaderTest, TestGetNextOtherFilter) {
     auto file = _create_file(_file2_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file2_path));
+                                                    std::filesystem::file_size(_file2_path), 100000);
     // init
     auto* ctx = _create_context_for_other_filter();
     Status status = file_reader->init(ctx);
@@ -1114,7 +1094,7 @@ TEST_F(FileReaderTest, TestGetNextOtherFilter) {
 TEST_F(FileReaderTest, TestSkipRowGroup) {
     auto file = _create_file(_file2_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file2_path));
+                                                    std::filesystem::file_size(_file2_path), 100000);
     // c1 > 10000
     auto* ctx = _create_context_for_skip_group();
     Status status = file_reader->init(ctx);
@@ -1133,7 +1113,7 @@ TEST_F(FileReaderTest, TestSkipRowGroup) {
 TEST_F(FileReaderTest, TestMultiFilterWithMultiPage) {
     auto file = _create_file(_file3_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file3_path));
+                                                    std::filesystem::file_size(_file3_path), 100000);
     // c3 = "c", c1 >= 4
     auto* ctx = _create_context_for_multi_filter();
     Status status = file_reader->init(ctx);
@@ -1143,7 +1123,7 @@ TEST_F(FileReaderTest, TestMultiFilterWithMultiPage) {
     {
         ASSERT_EQ(1, file_reader->_row_group_readers[0]->_dict_column_indices.size());
         int col_idx = file_reader->_row_group_readers[0]->_dict_column_indices[0];
-        ASSERT_EQ(2, file_reader->_row_group_readers[0]->_param.read_cols[col_idx].slot_id);
+        ASSERT_EQ(2, file_reader->_row_group_readers[0]->_param.read_cols[col_idx].slot_id());
     }
 
     // c0 is conjunct filter column
@@ -1168,7 +1148,7 @@ TEST_F(FileReaderTest, TestMultiFilterWithMultiPage) {
 TEST_F(FileReaderTest, TestOtherFilterWithMultiPage) {
     auto file = _create_file(_file3_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file3_path));
+                                                    std::filesystem::file_size(_file3_path), 100000);
     // c1 >= 4080
     auto* ctx = _create_context_for_late_materialization();
     Status status = file_reader->init(ctx);
@@ -1193,7 +1173,7 @@ TEST_F(FileReaderTest, TestOtherFilterWithMultiPage) {
 TEST_F(FileReaderTest, TestReadStructUpperColumns) {
     auto file = _create_file(_file4_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file4_path));
+                                                    std::filesystem::file_size(_file4_path), 100000);
     ;
 
     // init
@@ -1205,7 +1185,7 @@ TEST_F(FileReaderTest, TestReadStructUpperColumns) {
     {
         ASSERT_EQ(1, file_reader->_row_group_readers[0]->_dict_column_indices.size());
         int col_idx = file_reader->_row_group_readers[0]->_dict_column_indices[0];
-        ASSERT_EQ(1, file_reader->_row_group_readers[0]->_param.read_cols[col_idx].slot_id);
+        ASSERT_EQ(1, file_reader->_row_group_readers[0]->_param.read_cols[col_idx].slot_id());
     }
 
     // get next
@@ -1227,7 +1207,7 @@ TEST_F(FileReaderTest, TestReadStructUpperColumns) {
 TEST_F(FileReaderTest, TestReadWithUpperPred) {
     auto file = _create_file(_file4_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file4_path));
+                                                    std::filesystem::file_size(_file4_path), 100000);
 
     // init
     auto* ctx = _create_context_for_upper_pred();
@@ -1238,7 +1218,7 @@ TEST_F(FileReaderTest, TestReadWithUpperPred) {
     auto chunk = _create_struct_chunk();
     status = file_reader->get_next(&chunk);
     ASSERT_TRUE(status.ok());
-    LOG(ERROR) << "status: " << status.get_error_msg();
+    LOG(ERROR) << "status: " << status.message();
     ASSERT_EQ(3, chunk->num_rows());
 
     ColumnPtr int_col = chunk->get_column_by_slot_id(0);
@@ -1254,7 +1234,7 @@ TEST_F(FileReaderTest, TestReadWithUpperPred) {
 TEST_F(FileReaderTest, TestReadArray2dColumn) {
     auto file = _create_file(_file5_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file5_path));
+                                                    std::filesystem::file_size(_file5_path), 100000);
 
     //init
     auto* ctx = _create_file5_base_context();
@@ -1293,7 +1273,7 @@ TEST_F(FileReaderTest, TestReadArray2dColumn) {
 TEST_F(FileReaderTest, TestReadRequiredArrayColumns) {
     auto file = _create_file(_file6_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file6_path));
+                                                    std::filesystem::file_size(_file6_path), 100000);
 
     // init
     auto* ctx = _create_file6_base_context();
@@ -1315,12 +1295,12 @@ TEST_F(FileReaderTest, TestReadRequiredArrayColumns) {
 TEST_F(FileReaderTest, TestReadMapCharKeyColumn) {
     auto file = _create_file(_file_map_char_key_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file_map_char_key_path));
+                                                    std::filesystem::file_size(_file_map_char_key_path), 100000);
 
     //init
     auto* ctx = _create_file_map_char_key_context();
     Status status = file_reader->init(ctx);
-    ASSERT_TRUE(status.ok()) << status.get_error_msg();
+    ASSERT_TRUE(status.ok()) << status.message();
 
     EXPECT_EQ(file_reader->_row_group_readers.size(), 1);
     std::vector<io::SharedBufferedInputStream::IORange> ranges;
@@ -1347,7 +1327,7 @@ TEST_F(FileReaderTest, TestReadMapCharKeyColumn) {
     chunk->append_column(c_map1, chunk->num_columns());
 
     status = file_reader->get_next(&chunk);
-    ASSERT_TRUE(status.ok()) << status.get_error_msg();
+    ASSERT_TRUE(status.ok()) << status.message();
     EXPECT_EQ(chunk->num_rows(), 1);
     EXPECT_EQ(chunk->debug_row(0), "[0, {'abc':123}, {'def':456}]");
 }
@@ -1355,7 +1335,7 @@ TEST_F(FileReaderTest, TestReadMapCharKeyColumn) {
 TEST_F(FileReaderTest, TestReadMapColumn) {
     auto file = _create_file(_file_map_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file_map_path));
+                                                    std::filesystem::file_size(_file_map_path), 100000);
 
     //init
     auto* ctx = _create_file_map_base_context();
@@ -1411,7 +1391,7 @@ TEST_F(FileReaderTest, TestReadMapColumn) {
 TEST_F(FileReaderTest, TestReadStruct) {
     auto file = _create_file(_file4_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file4_path));
+                                                    std::filesystem::file_size(_file4_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -1454,7 +1434,7 @@ TEST_F(FileReaderTest, TestReadStruct) {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file4_path));
+    ctx->scan_range = (_create_scan_range(_file4_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
@@ -1498,7 +1478,7 @@ TEST_F(FileReaderTest, TestReadStruct) {
 TEST_F(FileReaderTest, TestReadStructSubField) {
     auto file = _create_file(_file4_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file4_path));
+                                                    std::filesystem::file_size(_file4_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -1536,7 +1516,7 @@ TEST_F(FileReaderTest, TestReadStructSubField) {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file4_path));
+    ctx->scan_range = (_create_scan_range(_file4_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
@@ -1580,7 +1560,7 @@ TEST_F(FileReaderTest, TestReadStructSubField) {
 TEST_F(FileReaderTest, TestReadStructAbsentSubField) {
     auto file = _create_file(_file4_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file4_path));
+                                                    std::filesystem::file_size(_file4_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -1611,7 +1591,7 @@ TEST_F(FileReaderTest, TestReadStructAbsentSubField) {
     };
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file4_path));
+    ctx->scan_range = (_create_scan_range(_file4_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
@@ -1637,7 +1617,7 @@ TEST_F(FileReaderTest, TestReadStructAbsentSubField) {
 TEST_F(FileReaderTest, TestReadStructCaseSensitive) {
     auto file = _create_file(_file4_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file4_path));
+                                                    std::filesystem::file_size(_file4_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -1661,12 +1641,12 @@ TEST_F(FileReaderTest, TestReadStructCaseSensitive) {
     Utils::SlotDesc slot_descs[] = {{"c1", c1}, {"c2", c2}, {""}};
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file4_path));
+    ctx->scan_range = (_create_scan_range(_file4_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
     if (!status.ok()) {
-        std::cout << status.get_error_msg() << std::endl;
+        std::cout << status.message() << std::endl;
     }
     ASSERT_TRUE(status.ok());
 
@@ -1690,7 +1670,7 @@ TEST_F(FileReaderTest, TestReadStructCaseSensitive) {
 TEST_F(FileReaderTest, TestReadStructCaseSensitiveError) {
     auto file = _create_file(_file4_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file4_path));
+                                                    std::filesystem::file_size(_file4_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -1715,20 +1695,20 @@ TEST_F(FileReaderTest, TestReadStructCaseSensitiveError) {
     Utils::SlotDesc slot_descs[] = {{"c1", c1}, {"c2", c2}, {""}};
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file4_path));
+    ctx->scan_range = (_create_scan_range(_file4_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
     EXPECT_TRUE(!status.ok());
     if (!status.ok()) {
-        std::cout << status.get_error_msg() << std::endl;
+        std::cout << status.message() << std::endl;
     }
 }
 
 TEST_F(FileReaderTest, TestReadStructNull) {
     auto file = _create_file(_file_struct_null_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file_struct_null_path));
+                                                    std::filesystem::file_size(_file_struct_null_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -1758,12 +1738,12 @@ TEST_F(FileReaderTest, TestReadStructNull) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_struct_null_path));
+    ctx->scan_range = (_create_scan_range(_file_struct_null_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
     if (!status.ok()) {
-        std::cout << status.get_error_msg() << std::endl;
+        std::cout << status.message() << std::endl;
     }
     ASSERT_TRUE(status.ok());
 
@@ -1789,7 +1769,7 @@ TEST_F(FileReaderTest, TestReadStructNull) {
 TEST_F(FileReaderTest, TestReadBinary) {
     auto file = _create_file(_file_binary_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file_binary_path));
+                                                    std::filesystem::file_size(_file_binary_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -1802,12 +1782,12 @@ TEST_F(FileReaderTest, TestReadBinary) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_binary_path));
+    ctx->scan_range = (_create_scan_range(_file_binary_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
     if (!status.ok()) {
-        std::cout << status.get_error_msg() << std::endl;
+        std::cout << status.message() << std::endl;
     }
     ASSERT_TRUE(status.ok());
 
@@ -1828,7 +1808,7 @@ TEST_F(FileReaderTest, TestReadBinary) {
 TEST_F(FileReaderTest, TestReadMapColumnWithPartialMaterialize) {
     auto file = _create_file(_file_map_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file_map_path));
+                                                    std::filesystem::file_size(_file_map_path), 100000);
 
     //init
     auto* ctx = _create_file_map_partial_materialize_context();
@@ -1888,7 +1868,7 @@ TEST_F(FileReaderTest, TestReadMapColumnWithPartialMaterialize) {
 TEST_F(FileReaderTest, TestReadNotNull) {
     auto file = _create_file(_file_col_not_null_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file_col_not_null_path));
+                                                    std::filesystem::file_size(_file_col_not_null_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -1915,7 +1895,7 @@ TEST_F(FileReaderTest, TestReadNotNull) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_col_not_null_path));
+    ctx->scan_range = (_create_scan_range(_file_col_not_null_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
@@ -1942,8 +1922,8 @@ TEST_F(FileReaderTest, TestTwoNestedLevelArray) {
     // id: INT, b: ARRAY<ARRAY<INT>>
     const std::string filepath = "./be/test/exec/test_data/parquet_data/two_level_nested_array.parquet";
     auto file = _create_file(filepath);
-    auto file_reader =
-            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(filepath));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(filepath), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -1965,7 +1945,7 @@ TEST_F(FileReaderTest, TestTwoNestedLevelArray) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_col_not_null_path));
+    ctx->scan_range = (_create_scan_range(_file_col_not_null_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
@@ -2006,7 +1986,7 @@ TEST_F(FileReaderTest, TestTwoNestedLevelArray) {
 TEST_F(FileReaderTest, TestReadMapNull) {
     auto file = _create_file(_file_map_null_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file_map_null_path));
+                                                    std::filesystem::file_size(_file_map_null_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -2025,7 +2005,7 @@ TEST_F(FileReaderTest, TestReadMapNull) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_map_null_path));
+    ctx->scan_range = (_create_scan_range(_file_map_null_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
@@ -2059,7 +2039,7 @@ TEST_F(FileReaderTest, TestReadArrayMap) {
 
     auto file = _create_file(_file_array_map_path);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(_file_array_map_path));
+                                                    std::filesystem::file_size(_file_array_map_path), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -2081,7 +2061,7 @@ TEST_F(FileReaderTest, TestReadArrayMap) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_array_map_path));
+    ctx->scan_range = (_create_scan_range(_file_array_map_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
@@ -2089,7 +2069,7 @@ TEST_F(FileReaderTest, TestReadArrayMap) {
     // Illegal parquet files, not support it anymore
     ASSERT_FALSE(status.ok());
 
-    //  ASSERT_TRUE(status.ok()) << status.get_error_msg();
+    //  ASSERT_TRUE(status.ok()) << status.message();
     //  EXPECT_EQ(file_reader->_row_group_readers.size(), 1);
     //
     //  auto chunk = std::make_shared<Chunk>();
@@ -2125,7 +2105,7 @@ TEST_F(FileReaderTest, TestStructArrayNull) {
     {
         auto file = _create_file(filepath);
         auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                        std::filesystem::file_size(filepath));
+                                                        std::filesystem::file_size(filepath), 100000);
 
         // --------------init context---------------
         auto ctx = _create_scan_context();
@@ -2157,7 +2137,7 @@ TEST_F(FileReaderTest, TestStructArrayNull) {
 
         ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
         Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-        ctx->scan_ranges.emplace_back(_create_scan_range(_file_col_not_null_path));
+        ctx->scan_range = (_create_scan_range(_file_col_not_null_path));
         // --------------finish init context---------------
 
         Status status = file_reader->init(ctx);
@@ -2199,7 +2179,7 @@ TEST_F(FileReaderTest, TestStructArrayNull) {
     // With 1024 chunk size
     {
         auto file = _create_file(filepath);
-        auto file_reader = std::make_shared<FileReader>(1024, file.get(), std::filesystem::file_size(filepath));
+        auto file_reader = std::make_shared<FileReader>(1024, file.get(), std::filesystem::file_size(filepath), 100000);
 
         // --------------init context---------------
         auto ctx = _create_scan_context();
@@ -2231,7 +2211,7 @@ TEST_F(FileReaderTest, TestStructArrayNull) {
 
         ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
         Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-        ctx->scan_ranges.emplace_back(_create_scan_range(_file_col_not_null_path));
+        ctx->scan_range = (_create_scan_range(_file_col_not_null_path));
         // --------------finish init context---------------
 
         Status status = file_reader->init(ctx);
@@ -2289,8 +2269,8 @@ TEST_F(FileReaderTest, TestComplexTypeNotNull) {
 
     std::string filepath = "./be/test/exec/test_data/parquet_data/complex_subfield_not_null.parquet";
     auto file = _create_file(filepath);
-    auto file_reader =
-            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(filepath));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(filepath), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -2322,7 +2302,7 @@ TEST_F(FileReaderTest, TestComplexTypeNotNull) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_col_not_null_path));
+    ctx->scan_range = (_create_scan_range(_file_col_not_null_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
@@ -2365,8 +2345,8 @@ TEST_F(FileReaderTest, TestHudiMORTwoNestedLevelArray) {
     // c: ARRAY<ARRAY<INT>>
     const std::string filepath = "./be/test/exec/test_data/parquet_data/hudi_mor_two_level_nested_array.parquet";
     auto file = _create_file(filepath);
-    auto file_reader =
-            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(filepath));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(filepath), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -2387,14 +2367,14 @@ TEST_F(FileReaderTest, TestHudiMORTwoNestedLevelArray) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(_file_col_not_null_path));
+    ctx->scan_range = (_create_scan_range(_file_col_not_null_path));
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
 
     // Illegal parquet files, not support it anymore
-    ASSERT_FALSE(status.ok()) << status.get_error_msg();
-    // ASSERT_TRUE(status.ok()) << status.get_error_msg();
+    ASSERT_FALSE(status.ok()) << status.message();
+    // ASSERT_TRUE(status.ok()) << status.message();
 
     //  EXPECT_EQ(file_reader->_row_group_readers.size(), 1);
     //
@@ -2443,8 +2423,8 @@ TEST_F(FileReaderTest, TestLateMaterializationAboutRequiredComplexType) {
     //  }
     const std::string filepath = "./be/test/formats/parquet/test_data/map_struct_subfield_required.parquet";
     auto file = _create_file(filepath);
-    auto file_reader =
-            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(filepath));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(filepath), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -2470,7 +2450,7 @@ TEST_F(FileReaderTest, TestLateMaterializationAboutRequiredComplexType) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(filepath));
+    ctx->scan_range = (_create_scan_range(filepath));
 
     _create_int_conjunct_ctxs(TExprOpcode::EQ, 0, 8000, &ctx->conjunct_ctxs_by_slot[0]);
     // --------------finish init context---------------
@@ -2494,7 +2474,7 @@ TEST_F(FileReaderTest, TestLateMaterializationAboutRequiredComplexType) {
         chunk->reset();
         status = file_reader->get_next(&chunk);
         if (!status.ok() && !status.is_end_of_file()) {
-            std::cout << status.get_error_msg() << std::endl;
+            std::cout << status.message() << std::endl;
             break;
         }
         chunk->check_or_die();
@@ -2524,8 +2504,8 @@ TEST_F(FileReaderTest, TestLateMaterializationAboutOptionalComplexType) {
     // }
     const std::string filepath = "./be/test/formats/parquet/test_data/map_struct_subfield_optional.parquet";
     auto file = _create_file(filepath);
-    auto file_reader =
-            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(filepath));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(filepath), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -2551,7 +2531,7 @@ TEST_F(FileReaderTest, TestLateMaterializationAboutOptionalComplexType) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(filepath));
+    ctx->scan_range = (_create_scan_range(filepath));
 
     _create_int_conjunct_ctxs(TExprOpcode::EQ, 0, 8000, &ctx->conjunct_ctxs_by_slot[0]);
     // --------------finish init context---------------
@@ -2587,8 +2567,8 @@ TEST_F(FileReaderTest, TestLateMaterializationAboutOptionalComplexType) {
 TEST_F(FileReaderTest, CheckDictOutofBouds) {
     const std::string filepath = "./be/test/exec/test_data/parquet_scanner/type_mismatch_decode_min_max.parquet";
     auto file = _create_file(filepath);
-    auto file_reader =
-            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(filepath));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(filepath), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -2634,7 +2614,7 @@ TEST_F(FileReaderTest, CheckDictOutofBouds) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(filepath));
+    ctx->scan_range = (_create_scan_range(filepath));
 
     // --------------finish init context---------------
 
@@ -2676,8 +2656,8 @@ TEST_F(FileReaderTest, CheckDictOutofBouds) {
 TEST_F(FileReaderTest, CheckLargeParquetHeader) {
     const std::string filepath = "./be/test/formats/parquet/test_data/large_page_header.parquet";
     auto file = _create_file(filepath);
-    auto file_reader =
-            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(filepath));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(filepath), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -2693,7 +2673,7 @@ TEST_F(FileReaderTest, CheckLargeParquetHeader) {
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(filepath));
+    ctx->scan_range = (_create_scan_range(filepath));
 
     // --------------finish init context---------------
 
@@ -2709,7 +2689,7 @@ TEST_F(FileReaderTest, CheckLargeParquetHeader) {
         chunk->reset();
         status = file_reader->get_next(&chunk);
         if (!status.ok()) {
-            std::cout << status.get_error_msg() << std::endl;
+            std::cout << status.message() << std::endl;
             break;
         }
         chunk->check_or_die();
@@ -2731,8 +2711,8 @@ TEST_F(FileReaderTest, TestMinMaxForIcebergTable) {
     const std::string filepath =
             "./be/test/formats/parquet/test_data/iceberg_schema_evolution/iceberg_string_map_string.parquet";
     auto file = _create_file(filepath);
-    auto file_reader =
-            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(filepath));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(filepath), 100000);
 
     // --------------init context---------------
     auto ctx = _create_scan_context();
@@ -2777,23 +2757,26 @@ TEST_F(FileReaderTest, TestMinMaxForIcebergTable) {
     TypeDescriptor type_int = TypeDescriptor::from_logical_type(LogicalType::TYPE_INT);
 
     Utils::SlotDesc slot_descs[] = {
-            {"data", type_data},
-            {"struct", type_struct},
-            {"int", type_int},
+            {"data", type_data, 0},
+            {"struct", type_struct, 1},
+            {"int", type_int, 2},
             {""},
     };
 
     ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
     Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
-    ctx->scan_ranges.emplace_back(_create_scan_range(filepath));
+    ctx->scan_range = (_create_scan_range(filepath));
 
     Utils::SlotDesc min_max_slots[] = {
-            {"int", TypeDescriptor::from_logical_type(LogicalType::TYPE_INT)},
+            {"int", TypeDescriptor::from_logical_type(LogicalType::TYPE_INT), 2},
             {""},
     };
     ctx->min_max_tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, min_max_slots);
-    _create_int_conjunct_ctxs(TExprOpcode::GE, 0, 5, &ctx->min_max_conjunct_ctxs);
-    _create_int_conjunct_ctxs(TExprOpcode::LE, 0, 5, &ctx->min_max_conjunct_ctxs);
+    std::vector<TExpr> t_conjuncts;
+    ParquetUTBase::append_int_conjunct(TExprOpcode::GE, 2, 5, &t_conjuncts);
+    ParquetUTBase::append_int_conjunct(TExprOpcode::LE, 2, 5, &t_conjuncts);
+
+    ParquetUTBase::create_conjunct_ctxs(&_pool, _runtime_state, &t_conjuncts, &ctx->min_max_conjunct_ctxs);
     // --------------finish init context---------------
 
     Status status = file_reader->init(ctx);
@@ -2901,7 +2884,7 @@ TEST_F(FileReaderTest, TestRandomReadWith2PageSize) {
                 _create_in_predicate_conjunct_ctxs(TExprOpcode::FILTER_IN, 0, in_oprands,
                                                    &ctx->conjunct_ctxs_by_slot[0]);
                 auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                                std::filesystem::file_size(file_path));
+                                                                std::filesystem::file_size(file_path), 0);
 
                 Status status = file_reader->init(ctx);
                 ASSERT_TRUE(status.ok());
@@ -2912,7 +2895,7 @@ TEST_F(FileReaderTest, TestRandomReadWith2PageSize) {
                     chunk->check_or_die();
                     total_row_nums += chunk->num_rows();
                     if (!status.ok() && !status.is_end_of_file()) {
-                        std::cout << status.get_error_msg() << std::endl;
+                        std::cout << status.message() << std::endl;
                         DCHECK(false) << "file path: " << file_path << ", " << _print_in_predicate();
                     }
                     // check row value
@@ -3004,7 +2987,7 @@ TEST_F(FileReaderTest, TestStructSubfieldDictFilter) {
     _create_struct_subfield_predicate_conjunct_ctxs(TExprOpcode::EQ, 3, type_struct_in_struct, subfield_path, "55",
                                                     &ctx->conjunct_ctxs_by_slot[3]);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(struct_in_struct_file_path));
+                                                    std::filesystem::file_size(struct_in_struct_file_path), 0);
 
     auto chunk = std::make_shared<Chunk>();
     chunk->append_column(ColumnHelper::create_column(TypeDescriptor::from_logical_type(LogicalType::TYPE_INT), true),
@@ -3068,8 +3051,8 @@ TEST_F(FileReaderTest, TestReadRoundByRound) {
     _create_int_conjunct_ctxs(TExprOpcode::GE, 0, 100, &ctx->conjunct_ctxs_by_slot[0]);
     // c1 <= 100
     _create_int_conjunct_ctxs(TExprOpcode::LE, 1, 100, &ctx->conjunct_ctxs_by_slot[1]);
-    auto file_reader =
-            std::make_shared<FileReader>(config::vector_chunk_size, file.get(), std::filesystem::file_size(file_path));
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(file_path), 1000);
     Status status = file_reader->init(ctx);
     ASSERT_TRUE(status.ok());
     size_t total_row_nums = 0;
@@ -3103,7 +3086,7 @@ TEST_F(FileReaderTest, TestStructSubfieldNoDecodeNotOutput) {
     _create_struct_subfield_predicate_conjunct_ctxs(TExprOpcode::EQ, 1, type_struct_in_struct, subfield_path, "55",
                                                     &ctx->conjunct_ctxs_by_slot[1]);
     auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
-                                                    std::filesystem::file_size(struct_in_struct_file_path));
+                                                    std::filesystem::file_size(struct_in_struct_file_path), 0);
 
     auto chunk = std::make_shared<Chunk>();
     chunk->append_column(ColumnHelper::create_column(TypeDescriptor::from_logical_type(LogicalType::TYPE_INT), true),
@@ -3129,6 +3112,157 @@ TEST_F(FileReaderTest, TestStructSubfieldNoDecodeNotOutput) {
         }
     }
     EXPECT_EQ(100, total_row_nums);
+}
+
+TEST_F(FileReaderTest, TestReadFooterCache) {
+    std::unique_ptr<BlockCache> cache(new BlockCache);
+    CacheOptions options;
+    options.mem_space_size = 100 * 1024 * 1024;
+    options.max_concurrent_inserts = 100000;
+    options.engine = "starcache";
+    Status status = cache->init(options);
+    ASSERT_TRUE(status.ok());
+
+    auto file = _create_file(_file1_path);
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(_file1_path), 100000);
+    file_reader->_cache = cache.get();
+
+    // first init, populcate footer cache
+    auto* ctx = _create_file1_base_context();
+    ctx->stats->footer_cache_read_count = 0;
+    ctx->stats->footer_cache_write_count = 0;
+    status = file_reader->init(ctx);
+    ASSERT_TRUE(status.ok());
+    ASSERT_EQ(ctx->stats->footer_cache_read_count, 0);
+    ASSERT_EQ(ctx->stats->footer_cache_write_count, 1);
+
+    auto file_reader2 = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                     std::filesystem::file_size(_file1_path), 100000);
+    file_reader2->_cache = cache.get();
+
+    // second init, read footer cache
+    auto* ctx2 = _create_file1_base_context();
+    ctx2->stats->footer_cache_read_count = 0;
+    ctx2->stats->footer_cache_write_count = 0;
+    ctx2->stats->footer_cache_read_ns = 0;
+    Status status2 = file_reader2->init(ctx2);
+    ASSERT_TRUE(status2.ok());
+    ASSERT_EQ(ctx2->stats->footer_cache_read_count, 1);
+    ASSERT_EQ(ctx2->stats->footer_cache_write_count, 0);
+}
+
+TEST_F(FileReaderTest, TestTime) {
+    // format:
+    // id: INT, b: TIME
+    const std::string filepath = "./be/test/formats/parquet/test_data/test_parquet_time_type.parquet";
+    auto file = _create_file(filepath);
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(filepath), 100000);
+
+    // --------------init context---------------
+    auto ctx = _create_scan_context();
+
+    TypeDescriptor type_int = TypeDescriptor::from_logical_type(LogicalType::TYPE_INT);
+
+    TypeDescriptor type_time = TypeDescriptor::from_logical_type(LogicalType::TYPE_TIME);
+
+    Utils::SlotDesc slot_descs[] = {
+            {"c1", type_int},
+            {"c2", type_time},
+            {""},
+    };
+
+    ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
+    Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
+    ctx->scan_range = (_create_scan_range(_file_col_not_null_path));
+    // --------------finish init context---------------
+
+    Status status = file_reader->init(ctx);
+    ASSERT_TRUE(status.ok());
+
+    EXPECT_EQ(file_reader->_row_group_readers.size(), 1);
+
+    auto chunk = std::make_shared<Chunk>();
+    chunk->append_column(ColumnHelper::create_column(type_int, true), chunk->num_columns());
+    chunk->append_column(ColumnHelper::create_column(type_time, true), chunk->num_columns());
+
+    status = file_reader->get_next(&chunk);
+    ASSERT_TRUE(status.ok());
+
+    chunk->check_or_die();
+
+    EXPECT_EQ("[1, 3723]", chunk->debug_row(0));
+    EXPECT_EQ("[4, NULL]", chunk->debug_row(1));
+    EXPECT_EQ("[3, 11045]", chunk->debug_row(2));
+    EXPECT_EQ("[2, 7384]", chunk->debug_row(3));
+
+    size_t total_row_nums = 0;
+    total_row_nums += chunk->num_rows();
+
+    {
+        while (!status.is_end_of_file()) {
+            chunk->reset();
+            status = file_reader->get_next(&chunk);
+            chunk->check_or_die();
+            total_row_nums += chunk->num_rows();
+        }
+    }
+
+    EXPECT_EQ(4, total_row_nums);
+}
+
+TEST_F(FileReaderTest, TestReadNoMinMaxStatistics) {
+    auto file = _create_file(_file_no_min_max_stats_path);
+    auto file_reader = std::make_shared<FileReader>(config::vector_chunk_size, file.get(),
+                                                    std::filesystem::file_size(_file_no_min_max_stats_path), 100000);
+
+    // --------------init context---------------
+    auto ctx = _create_scan_context();
+
+    TypeDescriptor type_varchar = TypeDescriptor::from_logical_type(LogicalType::TYPE_VARCHAR);
+
+    Utils::SlotDesc slot_descs[] = {
+            {"attr_value", type_varchar},
+            {""},
+    };
+
+    ctx->tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, slot_descs);
+    Utils::make_column_info_vector(ctx->tuple_desc, &ctx->materialized_columns);
+    ctx->scan_range = (_create_scan_range(_file_no_min_max_stats_path));
+
+    // create min max conjuncts
+    Utils::SlotDesc min_max_slots[] = {
+            {"attr_value", TypeDescriptor::from_logical_type(LogicalType::TYPE_VARCHAR)},
+            {""},
+    };
+    ctx->min_max_tuple_desc = Utils::create_tuple_descriptor(_runtime_state, &_pool, min_max_slots);
+    std::vector<TExpr> t_conjuncts;
+    ParquetUTBase::append_string_conjunct(TExprOpcode::GE, 0, "2", &t_conjuncts);
+    ParquetUTBase::append_string_conjunct(TExprOpcode::LE, 0, "2", &t_conjuncts);
+    ParquetUTBase::create_conjunct_ctxs(&_pool, _runtime_state, &t_conjuncts, &ctx->min_max_conjunct_ctxs);
+
+    // attr_value = '2'
+    _create_string_conjunct_ctxs(TExprOpcode::EQ, 0, "2", &ctx->conjunct_ctxs_by_slot[0]);
+    // --------------finish init context---------------
+
+    Status status = file_reader->init(ctx);
+    ASSERT_TRUE(status.ok());
+
+    EXPECT_EQ(file_reader->_row_group_readers.size(), 1);
+
+    auto chunk = std::make_shared<Chunk>();
+    chunk->append_column(ColumnHelper::create_column(type_varchar, true), chunk->num_columns());
+
+    status = file_reader->get_next(&chunk);
+    ASSERT_TRUE(status.ok());
+
+    chunk->check_or_die();
+
+    EXPECT_EQ("['2']", chunk->debug_row(0));
+    EXPECT_EQ("['2']", chunk->debug_row(1));
+    EXPECT_EQ("['2']", chunk->debug_row(2));
+    EXPECT_EQ(chunk->num_rows(), 111);
 }
 
 } // namespace starrocks::parquet

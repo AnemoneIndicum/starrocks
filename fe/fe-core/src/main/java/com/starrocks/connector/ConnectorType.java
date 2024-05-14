@@ -22,6 +22,8 @@ import com.starrocks.connector.hive.HiveConnector;
 import com.starrocks.connector.hudi.HudiConnector;
 import com.starrocks.connector.iceberg.IcebergConnector;
 import com.starrocks.connector.jdbc.JDBCConnector;
+import com.starrocks.connector.kudu.KuduConnector;
+import com.starrocks.connector.odps.OdpsConnector;
 import com.starrocks.connector.paimon.PaimonConnector;
 import com.starrocks.connector.unified.UnifiedConnector;
 import org.apache.commons.lang3.EnumUtils;
@@ -38,6 +40,8 @@ public enum ConnectorType {
     HUDI("hudi", HudiConnector.class, null),
     DELTALAKE("deltalake", DeltaLakeConnector.class, null),
     PAIMON("paimon", PaimonConnector.class, null),
+    ODPS("odps", OdpsConnector.class, null),
+    KUDU("kudu", KuduConnector.class, null),
     UNIFIED("unified", UnifiedConnector.class, null);
 
     public static Set<ConnectorType> SUPPORT_TYPE_SET = EnumSet.of(
@@ -48,6 +52,8 @@ public enum ConnectorType {
             HUDI,
             DELTALAKE,
             PAIMON,
+            ODPS,
+            KUDU,
             UNIFIED
     );
 

@@ -43,6 +43,7 @@ import com.starrocks.common.io.Writable;
 import com.starrocks.common.proc.BaseProcResult;
 import com.starrocks.common.proc.ProcNodeInterface;
 import com.starrocks.common.proc.ProcResult;
+import com.starrocks.common.util.concurrent.FairReentrantReadWriteLock;
 import com.starrocks.persist.DropResourceOperationLog;
 import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.persist.metablock.SRMetaBlockEOFException;
@@ -95,7 +96,7 @@ public class ResourceMgr implements Writable {
     @SerializedName(value = "nameToResource")
     private HashMap<String, Resource> nameToResource = new HashMap<>();
     private final ResourceProcNode procNode = new ResourceProcNode();
-    private final ReentrantReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final ReentrantReadWriteLock rwLock = new FairReentrantReadWriteLock();
 
     public ResourceMgr() {
     }
@@ -117,11 +118,11 @@ public class ResourceMgr implements Writable {
     }
 
     public void createResource(CreateResourceStmt stmt) throws DdlException {
+        Resource resource = Resource.fromStmt(stmt);
+
         this.writeLock();
         try {
-            Resource resource = Resource.fromStmt(stmt);
             String resourceName = stmt.getResourceName();
-
             String typeName = resource.getType().name().toLowerCase(Locale.ROOT);
             if (resource.needMappingCatalog()) {
                 try {

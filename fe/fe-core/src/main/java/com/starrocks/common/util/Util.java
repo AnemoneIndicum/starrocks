@@ -63,7 +63,6 @@ import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Predicate;
 import java.util.zip.Adler32;
-import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 
 public class Util {
@@ -312,21 +311,6 @@ public class Util {
         return Math.abs(ThreadLocalRandom.current().nextInt(Integer.MAX_VALUE));
     }
 
-    public static String dumpThread(Thread t, int lineNum) {
-        StringBuilder sb = new StringBuilder();
-        StackTraceElement[] elements = t.getStackTrace();
-        sb.append("dump thread: ").append(t.getName()).append(", id: ").append(t.getId()).append("\n");
-        int count = lineNum;
-        for (StackTraceElement element : elements) {
-            if (count == 0) {
-                break;
-            }
-            sb.append("    ").append(element.toString()).append("\n");
-            --count;
-        }
-        return sb.toString();
-    }
-
     // get response body as a string from the given url.
     // "encodedAuthInfo", the base64 encoded auth info. like:
     //      Base64.encodeBase64String("user:passwd".getBytes());
@@ -462,8 +446,7 @@ public class Util {
 
     public static byte[] compress(byte[] input) throws IOException {
         ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-        Deflater deflater = new Deflater();
-        try (DeflaterOutputStream dos = new DeflaterOutputStream(outputStream, deflater)) {
+        try (DeflaterOutputStream dos = new DeflaterOutputStream(outputStream)) {
             dos.write(input);
         }
         return outputStream.toByteArray();

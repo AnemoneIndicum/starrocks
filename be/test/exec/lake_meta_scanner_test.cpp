@@ -22,6 +22,7 @@
 #include "storage/lake/fixed_location_provider.h"
 #include "storage/lake/join_path.h"
 #include "storage/lake/location_provider.h"
+#include "storage/lake/tablet.h"
 #include "storage/lake/tablet_manager.h"
 #include "storage/lake_meta_reader.h"
 #include "testutil/id_generator.h"
@@ -40,7 +41,7 @@ struct MockLakeMetaScanner : public LakeMetaScanner {
 public:
     MockLakeMetaScanner(LakeMetaScanNode* parent) : LakeMetaScanner(parent) {}
 
-    std::shared_ptr<LakeMetaReader> reader() { return _reader; }
+    const std::unique_ptr<LakeMetaReader>& reader() { return _reader; }
     int64_t tablet_id() const { return _tablet_id; }
     bool is_opened() const { return _is_open; }
 };
@@ -58,7 +59,7 @@ public:
 
         {
             // create the tablet with its schema prepared
-            lake::TabletMetadata metadata;
+            TabletMetadata metadata;
             metadata.set_id(_tablet_id);
             metadata.set_version(2);
 
@@ -76,21 +77,17 @@ public:
             auto st = _tablet_mgr->put_tablet_metadata(metadata);
             EXPECT_TRUE(st.ok());
 
-            auto tablet_or = _tablet_mgr->get_tablet(_tablet_id);
+            auto tablet_or = _tablet_mgr->get_tablet(_tablet_id, 2);
             EXPECT_TRUE(tablet_or.ok());
-            auto st2 = tablet_or->get_schema();
-            EXPECT_TRUE(st2.ok());
         }
 
         _state = _pool.add(new RuntimeState(TQueryGlobals()));
 
         std::vector<::starrocks::TTupleId> tuple_ids{0};
-        std::vector<bool> nullable_tuples{true};
         _tnode = std::make_unique<TPlanNode>();
         _tnode->__set_node_id(1);
         _tnode->__set_node_type(TPlanNodeType::LAKE_SCAN_NODE);
         _tnode->__set_row_tuples(tuple_ids);
-        _tnode->__set_nullable_tuples(nullable_tuples);
         _tnode->__set_limit(-1);
 
         TDescriptorTableBuilder table_desc_builder;
@@ -140,19 +137,20 @@ TEST_F(LakeMetaScannerTest, test_init_lazy_and_real) {
     EXPECT_TRUE(scanner.reader().get() == nullptr);
     EXPECT_EQ(range->tablet_id, scanner.tablet_id());
 
-    std::shared_ptr<LakeMetaReader> mock_reader(new MockLakeMetaReader);
-    SyncPoint::GetInstance()->SetCallBack("lake_meta_scanner:open_mock_reader", [=](void* arg) {
-        std::shared_ptr<LakeMetaReader>* reader = static_cast<std::shared_ptr<LakeMetaReader>*>(arg);
+    std::unique_ptr<LakeMetaReader> mock_reader(new MockLakeMetaReader);
+    LakeMetaReader* raw_reader_ptr = mock_reader.get();
+    SyncPoint::GetInstance()->SetCallBack("lake_meta_scanner:open_mock_reader", [&](void* arg) {
+        auto* reader = static_cast<std::unique_ptr<LakeMetaReader>*>(arg);
         // non-empty reader
         EXPECT_TRUE((*reader).get() != nullptr);
-        *reader = mock_reader;
+        *reader = std::move(mock_reader);
     });
     SyncPoint::GetInstance()->EnableProcessing();
 
     auto st2 = scanner.open(nullptr);
     // after open() called, reader is created
     EXPECT_TRUE(st2.ok()) << st2;
-    EXPECT_EQ(mock_reader.get(), scanner.reader().get());
+    EXPECT_EQ(raw_reader_ptr, scanner.reader().get());
     EXPECT_TRUE(scanner.is_opened());
 
     SyncPoint::GetInstance()->ClearCallBack("lake_meta_scanner:open_mock_reader");

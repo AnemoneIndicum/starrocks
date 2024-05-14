@@ -20,11 +20,14 @@
 #include "gutil/macros.h"
 #include "storage/lake/tablet_metadata.h"
 
+namespace starrocks {
+class TxnLogPB;
+class TabletMetadataPB;
+} // namespace starrocks
+
 namespace starrocks::lake {
 
 class Tablet;
-class TxnLogPB;
-class TabletMetadataPB;
 
 class TxnLogApplier {
 public:
@@ -35,10 +38,9 @@ public:
     virtual Status apply(const TxnLogPB& tnx_log) = 0;
 
     virtual Status finish() = 0;
-
-    virtual std::shared_ptr<std::vector<std::string>> trash_files() = 0;
 };
 
-std::unique_ptr<TxnLogApplier> new_txn_log_applier(Tablet tablet, TabletMetadataPtr metadata, int64_t new_version);
+std::unique_ptr<TxnLogApplier> new_txn_log_applier(const Tablet& tablet, MutableTabletMetadataPtr metadata,
+                                                   int64_t new_version);
 
 } // namespace starrocks::lake

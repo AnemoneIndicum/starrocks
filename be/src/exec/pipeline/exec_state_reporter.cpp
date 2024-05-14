@@ -21,6 +21,7 @@
 #include "runtime/client_cache.h"
 #include "runtime/exec_env.h"
 #include "service/backend_options.h"
+#include "util/network_util.h"
 
 namespace starrocks::pipeline {
 std::string to_load_error_http_path(const std::string& file_name) {
@@ -28,14 +29,14 @@ std::string to_load_error_http_path(const std::string& file_name) {
         return "";
     }
     std::stringstream url;
-    url << "http://" << BackendOptions::get_localhost() << ":" << config::be_http_port << "/api/_load_error_log?"
+    url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_load_error_log?"
         << "file=" << file_name;
     return url.str();
 }
 
 std::string to_http_path(const std::string& token, const std::string& file_name) {
     std::stringstream url;
-    url << "http://" << BackendOptions::get_localhost() << ":" << config::be_http_port << "/api/_download_load?"
+    url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_download_load?"
         << "token=" << token << "&file=" << file_name;
     return url.str();
 }
@@ -43,6 +44,7 @@ std::string to_http_path(const std::string& token, const std::string& file_name)
 TReportExecStatusParams ExecStateReporter::create_report_exec_status_params(QueryContext* query_ctx,
                                                                             FragmentContext* fragment_ctx,
                                                                             RuntimeProfile* profile,
+                                                                            RuntimeProfile* load_channel_profile,
                                                                             const Status& status, bool done) {
     TReportExecStatusParams params;
     auto* runtime_state = fragment_ctx->runtime_state();
@@ -61,6 +63,14 @@ TReportExecStatusParams ExecStateReporter::create_report_exec_status_params(Quer
         // this is a load plan, and load is not finished, just make a brief report
         runtime_state->update_report_load_status(&params);
         params.__set_load_type(runtime_state->query_options().load_job_type);
+
+        if (query_ctx->enable_profile()) {
+            profile->to_thrift(&params.profile);
+            params.__isset.profile = true;
+
+            load_channel_profile->to_thrift(&params.load_channel_profile);
+            params.__isset.load_channel_profile = true;
+        }
     } else {
         if (runtime_state->query_options().query_type == TQueryType::LOAD) {
             runtime_state->update_report_load_status(&params);
@@ -69,6 +79,11 @@ TReportExecStatusParams ExecStateReporter::create_report_exec_status_params(Quer
         if (query_ctx->enable_profile()) {
             profile->to_thrift(&params.profile);
             params.__isset.profile = true;
+
+            if (runtime_state->query_options().query_type == TQueryType::LOAD) {
+                load_channel_profile->to_thrift(&params.load_channel_profile);
+                params.__isset.load_channel_profile = true;
+            }
         }
 
         if (!runtime_state->output_files().empty()) {
@@ -107,6 +122,13 @@ TReportExecStatusParams ExecStateReporter::create_report_exec_status_params(Quer
                 params.commitInfos.push_back(info);
             }
         }
+        if (!runtime_state->tablet_fail_infos().empty()) {
+            params.__isset.failInfos = true;
+            params.failInfos.reserve(runtime_state->tablet_fail_infos().size());
+            for (auto& info : runtime_state->tablet_fail_infos()) {
+                params.failInfos.push_back(info);
+            }
+        }
         if (!runtime_state->sink_commit_infos().empty()) {
             params.__isset.sink_commit_infos = true;
             params.sink_commit_infos.reserve(runtime_state->sink_commit_infos().size());
@@ -135,7 +157,8 @@ using apache::thrift::transport::TTransportException;
 Status ExecStateReporter::report_exec_status(const TReportExecStatusParams& params, ExecEnv* exec_env,
                                              const TNetworkAddress& fe_addr) {
     Status fe_status;
-    FrontendServiceConnection coord(exec_env->frontend_client_cache(), fe_addr, &fe_status);
+    FrontendServiceConnection coord(exec_env->frontend_client_cache(), fe_addr, config::thrift_rpc_timeout_ms,
+                                    &fe_status);
     if (!fe_status.ok()) {
         LOG(WARNING) << "Couldn't get a client for " << fe_addr;
         return fe_status;
@@ -151,7 +174,7 @@ Status ExecStateReporter::report_exec_status(const TReportExecStatusParams& para
             TTransportException::TTransportExceptionType type = e.getType();
             if (type != TTransportException::TTransportExceptionType::TIMED_OUT) {
                 // if not TIMED_OUT, retry
-                rpc_status = coord.reopen();
+                rpc_status = coord.reopen(config::thrift_rpc_timeout_ms);
 
                 if (!rpc_status.ok()) {
                     return rpc_status;
@@ -247,7 +270,8 @@ TMVMaintenanceTasks ExecStateReporter::create_report_epoch_params(const QueryCon
 Status ExecStateReporter::report_epoch(const TMVMaintenanceTasks& params, ExecEnv* exec_env,
                                        const TNetworkAddress& fe_addr) {
     Status fe_status;
-    FrontendServiceConnection coord(exec_env->frontend_client_cache(), fe_addr, &fe_status);
+    FrontendServiceConnection coord(exec_env->frontend_client_cache(), fe_addr, config::thrift_rpc_timeout_ms,
+                                    &fe_status);
     if (!fe_status.ok()) {
         LOG(WARNING) << "Couldn't get a client for " << fe_addr;
         return fe_status;
@@ -263,7 +287,7 @@ Status ExecStateReporter::report_epoch(const TMVMaintenanceTasks& params, ExecEn
             TTransportException::TTransportExceptionType type = e.getType();
             if (type != TTransportException::TTransportExceptionType::TIMED_OUT) {
                 // if not TIMED_OUT, retry
-                rpc_status = coord.reopen();
+                rpc_status = coord.reopen(config::thrift_rpc_timeout_ms);
 
                 if (!rpc_status.ok()) {
                     return rpc_status;
@@ -297,11 +321,23 @@ ExecStateReporter::ExecStateReporter() {
     if (!status.ok()) {
         LOG(FATAL) << "Cannot create thread pool for ExecStateReport: error=" << status.to_string();
     }
+
+    status = ThreadPoolBuilder("priority_ex_state_report") // priority exec state reporter with infinite queue
+                     .set_min_threads(1)
+                     .set_max_threads(2)
+                     .set_idle_timeout(MonoDelta::FromMilliseconds(2000))
+                     .build(&_priority_thread_pool);
+    if (!status.ok()) {
+        LOG(FATAL) << "Cannot create thread pool for priority ExecStateReport: error=" << status.to_string();
+    }
 }
 
-void ExecStateReporter::submit(std::function<void()>&& report_task) {
-    auto st = _thread_pool->submit_func(std::move(report_task));
-    st.permit_unchecked_error();
+void ExecStateReporter::submit(std::function<void()>&& report_task, bool priority) {
+    if (priority) {
+        (void)_priority_thread_pool->submit_func(std::move(report_task));
+    } else {
+        (void)_thread_pool->submit_func(std::move(report_task));
+    }
 }
 
 } // namespace starrocks::pipeline

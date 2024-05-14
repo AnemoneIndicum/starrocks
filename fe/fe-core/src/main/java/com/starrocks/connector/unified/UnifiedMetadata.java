@@ -21,11 +21,15 @@ import com.starrocks.catalog.Table;
 import com.starrocks.common.AlreadyExistsException;
 import com.starrocks.common.DdlException;
 import com.starrocks.common.MetaNotFoundException;
+import com.starrocks.common.profile.Tracers;
 import com.starrocks.connector.ConnectorMetadata;
+import com.starrocks.connector.MetaPreparationItem;
 import com.starrocks.connector.PartitionInfo;
 import com.starrocks.connector.RemoteFileInfo;
+import com.starrocks.connector.SerializedMetaSpec;
 import com.starrocks.connector.hive.HiveMetadata;
 import com.starrocks.credential.CloudConfiguration;
+import com.starrocks.qe.ConnectContext;
 import com.starrocks.sql.ast.CreateTableStmt;
 import com.starrocks.sql.ast.DropTableStmt;
 import com.starrocks.sql.optimizer.OptimizerContext;
@@ -107,6 +111,11 @@ public class UnifiedMetadata implements ConnectorMetadata {
     }
 
     @Override
+    public Table.TableType getTableType() {
+        return HIVE;
+    }
+
+    @Override
     public List<String> listDbNames() {
         return hiveMetadata.listDbNames();
     }
@@ -117,9 +126,9 @@ public class UnifiedMetadata implements ConnectorMetadata {
     }
 
     @Override
-    public List<String> listPartitionNames(String databaseName, String tableName) {
+    public List<String> listPartitionNames(String databaseName, String tableName, long snapshotId) {
         ConnectorMetadata metadata = metadataOfTable(databaseName, tableName);
-        return metadata.listPartitionNames(databaseName, tableName);
+        return metadata.listPartitionNames(databaseName, tableName, snapshotId);
     }
 
     @Override
@@ -136,10 +145,23 @@ public class UnifiedMetadata implements ConnectorMetadata {
     }
 
     @Override
+    public boolean tableExists(String dbName, String tblName) {
+        ConnectorMetadata metadata = metadataOfTable(dbName, tblName);
+        return metadata.tableExists(dbName, tblName);
+    }
+
+    @Override
     public List<RemoteFileInfo> getRemoteFileInfos(Table table, List<PartitionKey> partitionKeys, long snapshotId,
                                                    ScalarOperator predicate, List<String> fieldNames, long limit) {
         ConnectorMetadata metadata = metadataOfTable(table);
         return metadata.getRemoteFileInfos(table, partitionKeys, snapshotId, predicate, fieldNames, limit);
+    }
+
+    @Override
+    public SerializedMetaSpec getSerializedMetaSpec(String dbName, String tableName,
+                                             long snapshotId, String serializedPredicate) {
+        ConnectorMetadata metadata = metadataOfTable(dbName, tableName);
+        return metadata.getSerializedMetaSpec(dbName, tableName, snapshotId, serializedPredicate);
     }
 
     @Override
@@ -159,6 +181,12 @@ public class UnifiedMetadata implements ConnectorMetadata {
                                          List<PartitionKey> partitionKeys, ScalarOperator predicate, long limit) {
         ConnectorMetadata metadata = metadataOfTable(table);
         return metadata.getTableStatistics(session, table, columns, partitionKeys, predicate, limit);
+    }
+
+    @Override
+    public boolean prepareMetadata(MetaPreparationItem item, Tracers tracers, ConnectContext connectContext) {
+        ConnectorMetadata metadata = metadataOfTable(item.getTable());
+        return metadata.prepareMetadata(item, tracers, connectContext);
     }
 
     @Override

@@ -36,8 +36,6 @@ class PTabletInfo;
 class FileSystem;
 struct DeltaWriterOptions;
 
-using DeltaWriterOptions = starrocks::DeltaWriterOptions;
-
 class ReplicateChannel {
 public:
     ReplicateChannel(const DeltaWriterOptions* opt, std::string host, int32_t port, int64_t node_id);
@@ -69,7 +67,7 @@ private:
     const int64_t _node_id;
 
     ReusableClosure<PTabletWriterAddSegmentResult>* _closure = nullptr;
-    doris::PBackendService_Stub* _stub = nullptr;
+    PInternalService_Stub* _stub = nullptr;
     MemTracker* _mem_tracker = nullptr;
 
     bool _inited = false;

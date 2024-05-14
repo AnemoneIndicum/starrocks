@@ -20,6 +20,7 @@ import com.starrocks.authentication.AuthenticationMgr;
 import com.starrocks.cluster.ClusterNamespace;
 import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
+import com.starrocks.common.util.PropertyAnalyzer;
 import com.starrocks.persist.gson.GsonUtils;
 import com.starrocks.scheduler.persist.TaskSchedule;
 
@@ -49,6 +50,9 @@ public class Task implements Writable {
 
     @SerializedName("createTime")
     private long createTime;
+
+    @SerializedName("catalogName")
+    private String catalogName;
 
     @SerializedName("dbName")
     private String dbName;
@@ -131,6 +135,14 @@ public class Task implements Writable {
         this.createTime = createTime;
     }
 
+    public String getCatalogName() {
+        return catalogName;
+    }
+
+    public void setCatalogName(String catalogName) {
+        this.catalogName = catalogName;
+    }
+
     public String getDbName() {
         return ClusterNamespace.getNameFromFullName(dbName);
     }
@@ -150,6 +162,10 @@ public class Task implements Writable {
 
     public Map<String, String> getProperties() {
         return properties;
+    }
+
+    public String getPropertiesString() {
+        return PropertyAnalyzer.stringifyProperties(properties);
     }
 
     public void setProperties(Map<String, String> properties) {

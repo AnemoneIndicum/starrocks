@@ -22,9 +22,9 @@
 #include "exec/pipeline/operator.h"
 #include "exec/pipeline/source_operator.h"
 #include "storage/chunk_helper.h"
+#include "util/race_detect.h"
 
 namespace starrocks::pipeline {
-// TODO: implements reset_state
 class SpillableAggregateDistinctBlockingSinkOperator : public AggregateDistinctBlockingSinkOperator {
 public:
     template <class... Args>
@@ -60,13 +60,16 @@ public:
 
     Status reset_state(RuntimeState* state, const std::vector<ChunkPtr>& refill_chunks) override;
 
+    // only the prepare/open phase calls are valid.
+    SpillProcessChannelPtr spill_channel() { return _aggregator->spill_channel(); }
+
 private:
     [[nodiscard]] Status _spill_all_inputs(RuntimeState* state, const ChunkPtr& chunk);
     [[nodiscard]] Status _spill_aggregated_data(RuntimeState* state);
 
     std::function<StatusOr<ChunkPtr>()> _build_spill_task(RuntimeState* state);
-
     spill::SpillStrategy _spill_strategy = spill::SpillStrategy::NO_SPILL;
+    DECLARE_ONCE_DETECTOR(_set_finishing_once);
     bool _is_finished = false;
 };
 
@@ -96,7 +99,6 @@ private:
     SpillProcessChannelFactoryPtr _spill_channel_factory;
 };
 
-// TODO: implements reset_state
 class SpillableAggregateDistinctBlockingSourceOperator : public AggregateDistinctBlockingSourceOperator {
 public:
     template <class... Args>

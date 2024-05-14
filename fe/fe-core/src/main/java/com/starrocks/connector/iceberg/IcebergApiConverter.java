@@ -30,12 +30,19 @@ import com.starrocks.thrift.TIcebergColumnStats;
 import com.starrocks.thrift.TIcebergDataFile;
 import com.starrocks.thrift.TIcebergSchema;
 import com.starrocks.thrift.TIcebergSchemaField;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.ManifestFile;
 import org.apache.iceberg.Metrics;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
+import org.apache.iceberg.SnapshotSummary;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.expressions.ManifestEvaluator;
+import org.apache.iceberg.expressions.Projections;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.TypeUtil;
 import org.apache.iceberg.types.Types;
@@ -48,12 +55,16 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 
 import static com.starrocks.analysis.OutFileClause.PARQUET_COMPRESSION_TYPE_MAP;
 import static com.starrocks.connector.ColumnTypeConverter.fromIcebergType;
 import static com.starrocks.connector.ConnectorTableId.CONNECTOR_ID_GENERATOR;
-import static com.starrocks.connector.iceberg.IcebergConnector.ICEBERG_CATALOG_TYPE;
+import static com.starrocks.connector.iceberg.IcebergCatalogProperties.ICEBERG_CATALOG_TYPE;
+import static com.starrocks.connector.iceberg.IcebergMetadata.COMPRESSION_CODEC;
+import static com.starrocks.connector.iceberg.IcebergMetadata.FILE_FORMAT;
 import static com.starrocks.server.CatalogMgr.ResourceMappingCatalog.toResourceName;
 
 public class IcebergApiConverter {
@@ -70,6 +81,7 @@ public class IcebergApiConverter {
                 .setResourceName(toResourceName(catalogName, "iceberg"))
                 .setRemoteDbName(remoteDbName)
                 .setRemoteTableName(remoteTableName)
+                .setComment(nativeTbl.properties().getOrDefault("common", ""))
                 .setNativeTable(nativeTbl)
                 .setFullSchema(toFullSchemas(nativeTbl))
                 .setIcebergProperties(toIcebergProps(nativeCatalogType));
@@ -82,8 +94,9 @@ public class IcebergApiConverter {
         for (Column column : columns) {
             int index = icebergColumns.size();
             org.apache.iceberg.types.Type type = toIcebergColumnType(column.getType());
+            String colComment = StringUtils.defaultIfBlank(column.getComment(), null);
             Types.NestedField field = Types.NestedField.of(
-                    index, column.isAllowNull(), column.getName(), type, column.getComment());
+                    index, column.isAllowNull(), column.getName(), type, colComment);
             icebergColumns.add(field);
         }
 
@@ -133,6 +146,8 @@ public class IcebergApiConverter {
                 case DECIMAL128:
                     ScalarType scalarType = (ScalarType) type;
                     return Types.DecimalType.of(scalarType.getScalarPrecision(), scalarType.getScalarScale());
+                case TIME:
+                    return Types.TimeType.get();
                 default:
                     throw new StarRocksConnectorException("Unsupported primitive column type %s", primitiveType);
             }
@@ -264,20 +279,23 @@ public class IcebergApiConverter {
     public static Map<String, String> rebuildCreateTableProperties(Map<String, String> createProperties) {
         ImmutableMap.Builder<String, String> tableProperties = ImmutableMap.builder();
         createProperties.entrySet().forEach(tableProperties::put);
-        String fileFormat = createProperties.getOrDefault("file_format", TableProperties.DEFAULT_FILE_FORMAT_DEFAULT);
+        String fileFormat = createProperties.getOrDefault(FILE_FORMAT, TableProperties.DEFAULT_FILE_FORMAT_DEFAULT);
         String compressionCodec = null;
 
         if ("parquet".equalsIgnoreCase(fileFormat)) {
             tableProperties.put(TableProperties.DEFAULT_FILE_FORMAT, "parquet");
-            compressionCodec = createProperties.getOrDefault("compression_codec", TableProperties.PARQUET_COMPRESSION_DEFAULT);
+            compressionCodec =
+                    createProperties.getOrDefault(COMPRESSION_CODEC, TableProperties.PARQUET_COMPRESSION_DEFAULT);
             tableProperties.put(TableProperties.PARQUET_COMPRESSION, compressionCodec);
         } else if ("avro".equalsIgnoreCase(fileFormat)) {
             tableProperties.put(TableProperties.DEFAULT_FILE_FORMAT, "avro");
-            compressionCodec = createProperties.getOrDefault("compression_codec", TableProperties.AVRO_COMPRESSION_DEFAULT);
+            compressionCodec =
+                    createProperties.getOrDefault(COMPRESSION_CODEC, TableProperties.AVRO_COMPRESSION_DEFAULT);
             tableProperties.put(TableProperties.AVRO_COMPRESSION, compressionCodec);
         } else if ("orc".equalsIgnoreCase(fileFormat)) {
             tableProperties.put(TableProperties.DEFAULT_FILE_FORMAT, "orc");
-            compressionCodec = createProperties.getOrDefault("compression_codec", TableProperties.ORC_COMPRESSION_DEFAULT);
+            compressionCodec =
+                    createProperties.getOrDefault(COMPRESSION_CODEC, TableProperties.ORC_COMPRESSION_DEFAULT);
             tableProperties.put(TableProperties.ORC_COMPRESSION, compressionCodec);
         } else if (fileFormat != null) {
             throw new IllegalArgumentException("Unsupported format in USING: " + fileFormat);
@@ -286,7 +304,38 @@ public class IcebergApiConverter {
         if (!PARQUET_COMPRESSION_TYPE_MAP.containsKey(compressionCodec.toLowerCase(Locale.ROOT))) {
             throw new IllegalArgumentException("Unsupported compression codec in USING: " + compressionCodec);
         }
+        tableProperties.put(TableProperties.FORMAT_VERSION, "1");
 
         return tableProperties.build();
+    }
+
+    public static List<ManifestFile> filterManifests(List<ManifestFile> manifests,
+                                               org.apache.iceberg.Table table, Expression filter) {
+        Map<Integer, ManifestEvaluator> evalCache = specCache(table, filter);
+
+        return manifests.stream()
+                .filter(manifest -> manifest.hasAddedFiles() || manifest.hasExistingFiles())
+                .filter(manifest -> evalCache.get(manifest.partitionSpecId()).eval(manifest))
+                .collect(Collectors.toList());
+    }
+
+    private static Map<Integer, ManifestEvaluator> specCache(org.apache.iceberg.Table table, Expression filter) {
+        Map<Integer, ManifestEvaluator> cache = new ConcurrentHashMap<>();
+
+        for (Map.Entry<Integer, PartitionSpec> entry : table.specs().entrySet()) {
+            Integer spedId = entry.getKey();
+            PartitionSpec spec = entry.getValue();
+
+            Expression projection = Projections.inclusive(spec, false).project(filter);
+            ManifestEvaluator evaluator = ManifestEvaluator.forPartitionFilter(projection, spec, false);
+
+            cache.put(spedId, evaluator);
+        }
+        return cache;
+    }
+
+    public static boolean mayHaveEqualityDeletes(Snapshot snapshot) {
+        String count = snapshot.summary().get(SnapshotSummary.TOTAL_EQ_DELETES_PROP);
+        return count == null || !count.equals("0");
     }
 }

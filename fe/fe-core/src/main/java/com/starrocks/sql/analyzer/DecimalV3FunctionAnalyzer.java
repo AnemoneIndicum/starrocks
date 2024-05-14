@@ -57,6 +57,7 @@ public class DecimalV3FunctionAnalyzer {
                     .add(FunctionSet.LEAD).add(FunctionSet.LAG)
                     .add(FunctionSet.FIRST_VALUE).add(FunctionSet.LAST_VALUE)
                     .add(FunctionSet.ANY_VALUE).add(FunctionSet.ARRAY_AGG).add(FunctionSet.ARRAY_AGG_DISTINCT)
+                    .add(FunctionSet.ARRAY_UNIQUE_AGG)
                     .add(FunctionSet.ANY_VALUE)
                     .add(FunctionSet.APPROX_TOP_K)
                     .add(FunctionSet.HISTOGRAM).build();
@@ -195,6 +196,11 @@ public class DecimalV3FunctionAnalyzer {
                 returnType = fn.getReturnType();
             } else if (fn.functionName().equals(FunctionSet.AVG)) {
                 // avg on decimal complies with Snowflake-style
+                // avg actual processed like sum()/count(), it also has a risk of overflow if the scale is too large,
+                // so we limit the maximum scale for this case
+                if (((ScalarType) argType).getScalarScale() > 18) {
+                    argType = ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL128, 38, 18);
+                }
                 final ArithmeticExpr.TypeTriple triple =
                         ArithmeticExpr.getReturnTypeOfDecimal(ArithmeticExpr.Operator.DIVIDE, (ScalarType) argType,
                                 DECIMAL128P38S0);

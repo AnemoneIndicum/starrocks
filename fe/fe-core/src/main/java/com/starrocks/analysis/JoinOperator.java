@@ -60,6 +60,8 @@ public enum JoinOperator {
     public static final String HINT_SHUFFLE = "SHUFFLE";
     public static final String HINT_COLOCATE = "COLOCATE";
     public static final String HINT_BROADCAST = "BROADCAST";
+
+    public static final String HINT_SKEW = "SKEW";
     public static final String HINT_UNREORDER = "UNREORDER";
 
     private final String description;
@@ -106,6 +108,10 @@ public enum JoinOperator {
 
     public boolean isLeftAntiJoin() {
         return this == LEFT_ANTI_JOIN || this == NULL_AWARE_LEFT_ANTI_JOIN;
+    }
+
+    public boolean isNullAwareLeftAntiJoin() {
+        return this == NULL_AWARE_LEFT_ANTI_JOIN;
     }
 
     public boolean isRightSemiJoin() {
@@ -162,6 +168,10 @@ public enum JoinOperator {
 
     public static Set<JoinOperator> innerCrossJoinSet() {
         return Sets.newHashSet(INNER_JOIN, CROSS_JOIN);
+    }
+
+    public boolean canGenerateRuntimeFilter() {
+        return !(isLeftOuterJoin() || isFullOuterJoin() || isLeftAntiJoin());
     }
 }
 

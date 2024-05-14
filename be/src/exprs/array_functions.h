@@ -72,6 +72,14 @@ public:
         return ArrayJoin::process(context, columns);
     }
 
+    static StatusOr<ColumnPtr> array_concat_ws(FunctionContext* context, const Columns& columns) {
+        DCHECK_EQ(columns.size(), 2);
+        Columns new_columns(2);
+        new_columns[0] = columns[1];
+        new_columns[1] = columns[0];
+        return ArrayJoin::process(context, new_columns);
+    }
+
     template <LogicalType type>
     static StatusOr<ColumnPtr> array_sum(FunctionContext* context, const Columns& columns) {
         return ArrayArithmetic::template array_sum<type>(context, columns);
@@ -108,6 +116,7 @@ public:
     DEFINE_VECTORIZED_FN(array_filter);
     DEFINE_VECTORIZED_FN(all_match);
     DEFINE_VECTORIZED_FN(any_match);
+    DEFINE_VECTORIZED_FN(array_contains_seq);
 
     // array function for nested type(Array/Map/Struct)
     DEFINE_VECTORIZED_FN(array_distinct_any_type);

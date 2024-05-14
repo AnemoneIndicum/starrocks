@@ -35,7 +35,6 @@
 package com.starrocks.transaction;
 
 import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
@@ -45,36 +44,45 @@ import com.starrocks.catalog.Database;
 import com.starrocks.catalog.MaterializedIndex;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.PhysicalPartition;
+import com.starrocks.catalog.Replica.ReplicaState;
 import com.starrocks.common.Config;
 import com.starrocks.common.TraceManager;
 import com.starrocks.common.UserException;
-import com.starrocks.common.io.Text;
 import com.starrocks.common.io.Writable;
+import com.starrocks.common.util.concurrent.FairReentrantReadWriteLock;
 import com.starrocks.metric.MetricRepo;
-import com.starrocks.persist.gson.GsonUtils;
+import com.starrocks.proto.TxnTypePB;
 import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.WarehouseManager;
 import com.starrocks.service.FrontendOptions;
+import com.starrocks.system.Backend;
 import com.starrocks.task.PublishVersionTask;
+import com.starrocks.thrift.TOlapTablePartition;
 import com.starrocks.thrift.TPartitionVersionInfo;
+import com.starrocks.thrift.TTabletLocation;
+import com.starrocks.thrift.TTxnType;
 import com.starrocks.thrift.TUniqueId;
 import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.api.trace.StatusCode;
-import org.apache.commons.codec.binary.Hex;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+import javax.annotation.Nullable;
 import javax.validation.constraints.NotNull;
 
 public class TransactionState implements Writable {
@@ -99,7 +107,9 @@ public class TransactionState implements Writable {
         DELETE(6),                     // synchronization delete job use this type
         LAKE_COMPACTION(7),            // compaction of LakeTable
         FRONTEND_STREAMING(8),          // FE streaming load use this type
-        MV_REFRESH(9);                  // Refresh MV
+        MV_REFRESH(9),                  // Refresh MV
+        REPLICATION(10),                // Replication
+        BYPASS_WRITE(11);               // Bypass BE, and write data file directly
 
         private final int flag;
 
@@ -112,28 +122,14 @@ public class TransactionState implements Writable {
         }
 
         public static LoadJobSourceType valueOf(int flag) {
-            switch (flag) {
-                case 1:
-                    return FRONTEND;
-                case 2:
-                    return BACKEND_STREAMING;
-                case 3:
-                    return INSERT_STREAMING;
-                case 4:
-                    return ROUTINE_LOAD_TASK;
-                case 5:
-                    return BATCH_LOAD_JOB;
-                case 6:
-                    return DELETE;
-                case 7:
-                    return LAKE_COMPACTION;
-                case 8:
-                    return FRONTEND_STREAMING;
-                case 9:
-                    return MV_REFRESH;
-                default:
-                    return null;
-            }
+            return Arrays.stream(values())
+                    .filter(sourceType -> sourceType.flag == flag)
+                    .findFirst()
+                    .orElse(null);
+        }
+
+        public int getFlag() {
+            return flag;
         }
     }
 
@@ -164,7 +160,7 @@ public class TransactionState implements Writable {
                 case OFFSET_OUT_OF_RANGE:
                     return "Offset out of range";
                 case NO_PARTITIONS:
-                    return "all partitions have no load data";
+                    return "No partitions have data available for loading";
                 case FILTERED_ROWS:
                     return "too many filtered rows";
                 default:
@@ -246,12 +242,16 @@ public class TransactionState implements Writable {
     private LoadJobSourceType sourceType;
     @SerializedName("pt")
     private long prepareTime;
+    @SerializedName("pet")
+    private long preparedTime;
     @SerializedName("ct")
     private long commitTime;
     @SerializedName("ft")
     private long finishTime;
     @SerializedName("rs")
     private String reason = "";
+    @SerializedName("gtid")
+    private long globalTransactionId;
 
     // whether this txn is finished using new mechanism
     // this field needs to be persisted, so we shared the serialization field with `reason`.
@@ -264,6 +264,10 @@ public class TransactionState implements Writable {
     // error replica ids
     @SerializedName("er")
     private Set<Long> errorReplicas;
+
+    @SerializedName("ctl")
+    private boolean useCombinedTxnLog;
+
     private final CountDownLatch latch;
 
     // these states need not be serialized
@@ -311,12 +315,13 @@ public class TransactionState implements Writable {
     @SerializedName("ta")
     private TxnCommitAttachment txnCommitAttachment;
 
+    @SerializedName("wid")
+    private long warehouseId = WarehouseManager.DEFAULT_WAREHOUSE_ID;
+
     // this map should be set when load execution begin, so that when the txn commit, it will know
     // which tables and rollups it loaded.
     // tbl id -> (index ids)
     private final Map<Long, Set<Long>> loadedTblIndexes = Maps.newHashMap();
-
-    private String errorLogUrl = null;
 
     // record some error msgs during the transaction operation.
     // this msg will be shown in show proc "/transactions/dbId/";
@@ -328,10 +333,31 @@ public class TransactionState implements Writable {
     // used for PublishDaemon to check whether this txn can be published
     // not persisted, so need to rebuilt if FE restarts
     private volatile TransactionChecker finishChecker = null;
-    private long checkerCreationTime = 0;
+
     private Span txnSpan = null;
     private String traceParent = null;
     private Set<TabletCommitInfo> tabletCommitInfos = null;
+
+    // For a transaction, we need to ensure that different clients obtain consistent partition information,
+    // to avoid inconsistencies caused by replica migration and other operations during the transaction process.
+    // Therefore, a snapshot of this information is maintained here.
+    private ConcurrentMap<String, TOlapTablePartition> partitionNameToTPartition = Maps.newConcurrentMap();
+    private ConcurrentMap<Long, TTabletLocation> tabletIdToTTabletLocation = Maps.newConcurrentMap();
+    private Map<String, Lock> createPartitionLocks = Maps.newHashMap();
+
+    private final ReentrantReadWriteLock txnLock = new FairReentrantReadWriteLock();
+
+    public void writeLock() {
+        if (Config.lock_manager_enable_using_fine_granularity_lock) {
+            txnLock.writeLock().lock();
+        }
+    }
+
+    public void writeUnlock() {
+        if (Config.lock_manager_enable_using_fine_granularity_lock) {
+            txnLock.writeLock().unlock();
+        }
+    }
 
     public TransactionState() {
         this.dbId = -1;
@@ -387,7 +413,12 @@ public class TransactionState implements Writable {
     }
 
     public boolean isRunning() {
-        return transactionStatus == TransactionStatus.PREPARE || transactionStatus == TransactionStatus.COMMITTED;
+        return transactionStatus == TransactionStatus.PREPARE || transactionStatus == TransactionStatus.PREPARED ||
+                transactionStatus == TransactionStatus.COMMITTED;
+    }
+
+    public Set<TabletCommitInfo> getTabletCommitInfos() {
+        return tabletCommitInfos;
     }
 
     public void setTabletCommitInfos(List<TabletCommitInfo> infos) {
@@ -395,14 +426,28 @@ public class TransactionState implements Writable {
         this.tabletCommitInfos.addAll(infos);
     }
 
-    public boolean tabletCommitInfosContainsReplica(long tabletId, long backendId) {
+    public boolean tabletCommitInfosContainsReplica(long tabletId, long backendId, ReplicaState state) {
         TabletCommitInfo info = new TabletCommitInfo(tabletId, backendId);
-        if (this.tabletCommitInfos == null || this.tabletCommitInfos.contains(info)) {
-            // if tabletCommitInfos is null, skip this check and return true
+        if (this.tabletCommitInfos == null) {
+            if (LOG.isDebugEnabled()) {
+                Backend backend = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackend(backendId);
+                // if tabletCommitInfos is null, skip this check and return true
+                LOG.debug("tabletCommitInfos is null in TransactionState, tablet {} backend {} txn {}",
+                        tabletId, backend != null ? backend.toString() : "", transactionId);
+            }
             return true;
-        } else {
-            return false;
         }
+        if (state != ReplicaState.NORMAL) {
+            // Skip check when replica is CLONE, ALTER or SCHEMA CHANGE
+            // We handle version missing in finishTask when change state to NORMAL
+            if (LOG.isDebugEnabled()) {
+                Backend backend = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackend(backendId);
+                LOG.debug("skip tabletCommitInfos check because tablet {} backend {} is in state {}",
+                        tabletId, backend != null ? backend.toString() : "", state);
+            }
+            return true;
+        }
+        return this.tabletCommitInfos.contains(info);
     }
 
     // Only for OlapTable
@@ -437,6 +482,10 @@ public class TransactionState implements Writable {
 
     public long getTransactionId() {
         return transactionId;
+    }
+
+    public long getGlobalTransactionId() {
+        return globalTransactionId;
     }
 
     public String getLabel() {
@@ -479,12 +528,12 @@ public class TransactionState implements Writable {
         return timeoutMs;
     }
 
-    public void setErrorLogUrl(String errorLogUrl) {
-        this.errorLogUrl = errorLogUrl;
+    public long getWarehouseId() {
+        return warehouseId;
     }
 
-    public String getErrorLogUrl() {
-        return errorLogUrl;
+    public void setWarehouseId(long warehouseId) {
+        this.warehouseId = warehouseId;
     }
 
     public void setTransactionStatus(TransactionStatus transactionStatus) {
@@ -493,13 +542,13 @@ public class TransactionState implements Writable {
 
         // after status changed
         if (transactionStatus == TransactionStatus.VISIBLE) {
-            if (MetricRepo.isInit) {
+            if (MetricRepo.hasInit) {
                 MetricRepo.COUNTER_TXN_SUCCESS.increase(1L);
             }
             txnSpan.addEvent("set_visible");
             txnSpan.end();
         } else if (transactionStatus == TransactionStatus.ABORTED) {
-            if (MetricRepo.isInit) {
+            if (MetricRepo.hasInit) {
                 MetricRepo.COUNTER_TXN_FAILED.increase(1L);
             }
             txnSpan.setAttribute("state", "aborted");
@@ -524,7 +573,7 @@ public class TransactionState implements Writable {
             throws TransactionException {
         // callback will pass to afterStateTransform since it may be deleted from
         // GlobalTransactionMgr between beforeStateTransform and afterStateTransform
-        TxnStateChangeCallback callback = GlobalStateMgr.getCurrentGlobalTransactionMgr()
+        TxnStateChangeCallback callback = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr()
                 .getCallbackFactory().getCallback(callbackId);
         // before status changed
         if (callback != null) {
@@ -552,9 +601,9 @@ public class TransactionState implements Writable {
         return callback;
     }
 
-    public void afterStateTransform(TransactionStatus transactionStatus, boolean txnOperated) throws UserException {
+    public void afterStateTransform(TransactionStatus transactionStatus, boolean txnOperated) {
         // after status changed
-        TxnStateChangeCallback callback = GlobalStateMgr.getCurrentGlobalTransactionMgr()
+        TxnStateChangeCallback callback = GlobalStateMgr.getCurrentState().getGlobalTransactionMgr()
                 .getCallbackFactory().getCallback(callbackId);
         if (callback != null) {
             if (Objects.requireNonNull(transactionStatus) == TransactionStatus.VISIBLE) {
@@ -587,7 +636,7 @@ public class TransactionState implements Writable {
 
     public void replaySetTransactionStatus() {
         TxnStateChangeCallback callback =
-                GlobalStateMgr.getCurrentGlobalTransactionMgr().getCallbackFactory().getCallback(
+                GlobalStateMgr.getCurrentState().getGlobalTransactionMgr().getCallbackFactory().getCallback(
                         callbackId);
         if (callback != null) {
             if (transactionStatus == TransactionStatus.ABORTED) {
@@ -610,8 +659,16 @@ public class TransactionState implements Writable {
         return this.latch.await(timeout, unit);
     }
 
+    public void setGlobalTransactionId(long globalTransactionId) {
+        this.globalTransactionId = globalTransactionId;
+    }
+
     public void setPrepareTime(long prepareTime) {
         this.prepareTime = prepareTime;
+    }
+
+    public void setPreparedTime(long preparedTime) {
+        this.preparedTime = preparedTime;
     }
 
     public void setCommitTime(long commitTime) {
@@ -635,17 +692,7 @@ public class TransactionState implements Writable {
     }
 
     public List<Long> getTableIdList() {
-        if (tableIdList.isEmpty()) {
-            // Old version sometimes forgot to set the tabletIdList, collect tabletIdList
-            // from idToTableCommitInfos.
-            // NOTE: this works only when the state is COMMITTED or VISIBLE
-            tableIdList = Lists.newArrayList(idToTableCommitInfos.keySet());
-        }
         return tableIdList;
-    }
-
-    public void setTableIdList(List<Long> tableIdList) {
-        this.tableIdList = tableIdList;
     }
 
     public Map<Long, TableCommitInfo> getIdToTableCommitInfos() {
@@ -656,6 +703,7 @@ public class TransactionState implements Writable {
         idToTableCommitInfos.put(tableId, tableCommitInfo);
     }
 
+    @Nullable
     public TableCommitInfo getTableCommitInfo(long tableId) {
         return this.idToTableCommitInfos.get(tableId);
     }
@@ -676,7 +724,7 @@ public class TransactionState implements Writable {
     // return true if txn is running but timeout
     public boolean isTimeout(long currentMillis) {
         return (transactionStatus == TransactionStatus.PREPARE && currentMillis - prepareTime > timeoutMs)
-                || (transactionStatus == TransactionStatus.PREPARED && (currentMillis - commitTime)
+                || (transactionStatus == TransactionStatus.PREPARED && (currentMillis - preparedTime)
                 / 1000 > Config.prepared_transaction_default_timeout_second);
     }
 
@@ -752,11 +800,22 @@ public class TransactionState implements Writable {
         if (txnCommitAttachment != null) {
             sb.append(" attachment: ").append(txnCommitAttachment);
         }
+        if (tabletCommitInfos != null) {
+            sb.append(" tabletCommitInfos size: ").append(tabletCommitInfos.size());
+        }
         return sb.toString();
     }
 
     public LoadJobSourceType getSourceType() {
         return sourceType;
+    }
+
+    public TTxnType getTxnType() {
+        return sourceType == LoadJobSourceType.REPLICATION ? TTxnType.TXN_REPLICATION : TTxnType.TXN_NORMAL;
+    }
+
+    public TxnTypePB getTxnTypePB() {
+        return sourceType == LoadJobSourceType.REPLICATION ? TxnTypePB.TXN_REPLICATION : TxnTypePB.TXN_NORMAL;
     }
 
     public Map<Long, PublishVersionTask> getPublishVersionTasks() {
@@ -766,142 +825,6 @@ public class TransactionState implements Writable {
     public void clearAfterPublished() {
         publishVersionTasks.clear();
         finishChecker = null;
-    }
-
-    @Override
-    public void write(DataOutput out) throws IOException {
-        out.writeLong(transactionId);
-        Text.writeString(out, label);
-        out.writeLong(dbId);
-        out.writeInt(idToTableCommitInfos.size());
-        for (TableCommitInfo info : idToTableCommitInfos.values()) {
-            info.write(out);
-        }
-        out.writeInt(txnCoordinator.sourceType.value());
-        Text.writeString(out, txnCoordinator.ip);
-        out.writeInt(transactionStatus.value());
-        out.writeInt(sourceType.value());
-        out.writeLong(prepareTime);
-        out.writeLong(commitTime);
-        out.writeLong(finishTime);
-        // if txn use new publish mechanism, store state in the space originally used by `reason`
-        // if new publish with TxnFinishState, write json {"normal":[xx],"abnormal":[xxx,xxx]}
-        // else write `reason` field
-        // they are both String, so they are compatible
-        if (transactionStatus == TransactionStatus.VISIBLE) {
-            if (newFinish) {
-                Preconditions.checkNotNull(finishState);
-                Text.writeString(out, GsonUtils.GSON.toJson(finishState));
-            } else {
-                Text.writeString(out, "");
-            }
-        } else {
-            Text.writeString(out, reason);
-        }
-        out.writeInt(errorReplicas.size());
-        for (long errorReplicaId : errorReplicas) {
-            out.writeLong(errorReplicaId);
-        }
-
-        if (txnCommitAttachment == null) {
-            out.writeBoolean(false);
-        } else {
-            out.writeBoolean(true);
-            txnCommitAttachment.write(out);
-        }
-        out.writeLong(callbackId);
-        out.writeLong(timeoutMs);
-        out.writeInt(tableIdList.size());
-        for (Long tableId : tableIdList) {
-            out.writeLong(tableId);
-        }
-    }
-
-    public void readFields(DataInput in) throws IOException {
-        transactionId = in.readLong();
-        label = Text.readString(in);
-        dbId = in.readLong();
-        int size = in.readInt();
-        for (int i = 0; i < size; i++) {
-            TableCommitInfo info = new TableCommitInfo();
-            info.readFields(in);
-            idToTableCommitInfos.put(info.getTableId(), info);
-        }
-        txnCoordinator = new TxnCoordinator(TxnSourceType.valueOf(in.readInt()), Text.readString(in));
-        transactionStatus = TransactionStatus.valueOf(in.readInt());
-        sourceType = LoadJobSourceType.valueOf(in.readInt());
-        prepareTime = in.readLong();
-        commitTime = in.readLong();
-        finishTime = in.readLong();
-        if (transactionStatus == TransactionStatus.VISIBLE) {
-            int len = in.readInt();
-            if (len == 0) {
-                newFinish = false;
-            } else {
-                byte[] bytes = new byte[len];
-                in.readFully(bytes);
-                try {
-                    // originally, TxnFinishState is serialized using protobuf(baidu jprotobuf),
-                    // but looks like the ser/deser is not compatible with java native serialization
-                    // causing FE error when upgrading, so changed to json serialization, but keep
-                    // the old deserialization code here for compatibility
-                    // see: https://github.com/StarRocks/starrocks/issues/15248
-                    byte version = bytes[0];
-                    if (version == 1) {
-                        if (finishState == null) {
-                            finishState = new TxnFinishState();
-                        }
-                        byte[] pbBytes = new byte[len - 1];
-                        System.arraycopy(bytes, 1, pbBytes, 0, len - 1);
-                        finishState.fromBytes(pbBytes);
-                        newFinish = true;
-                    } else {
-                        String content = Text.decode(bytes);
-                        if (content.length() > 2 && content.charAt(0) == '{') {
-                            finishState = GsonUtils.GSON.fromJson(content, TxnFinishState.class);
-                            newFinish = true;
-                        } else {
-                            // old reason
-                            reason = content;
-                            newFinish = false;
-                        }
-                    }
-                } catch (IOException e) {
-                    LOG.warn("failed to deserialize TxnFinishState data: " + Hex.encodeHexString(bytes));
-                }
-            }
-        } else {
-            reason = Text.readString(in);
-        }
-        int errorReplicaNum = in.readInt();
-        for (int i = 0; i < errorReplicaNum; ++i) {
-            errorReplicas.add(in.readLong());
-        }
-
-        if (in.readBoolean()) {
-            txnCommitAttachment = TxnCommitAttachment.read(in);
-        }
-        callbackId = in.readLong();
-        timeoutMs = in.readLong();
-
-        tableIdList = Lists.newArrayList();
-        int tableListSize = in.readInt();
-        for (int i = 0; i < tableListSize; i++) {
-            tableIdList.add(in.readLong());
-        }
-
-        txnSpan.setAttribute("txn_id", transactionId);
-        txnSpan.setAttribute("label", label);
-        if (transactionStatus == TransactionStatus.COMMITTED) {
-            txnSpan.addEvent("set_committed");
-        } else if (transactionStatus == TransactionStatus.ABORTED) {
-            txnSpan.setAttribute("state", "aborted");
-            txnSpan.setStatus(StatusCode.ERROR, reason);
-            txnSpan.end();
-        } else if (transactionStatus == TransactionStatus.VISIBLE) {
-            txnSpan.addEvent("set_visible");
-            txnSpan.end();
-        }
     }
 
     public void setErrorMsg(String errMsg) {
@@ -934,7 +857,7 @@ public class TransactionState implements Writable {
         if (publishBackends.isEmpty()) {
             // note: tasks are sent to all backends including dead ones, or else
             // transaction manager will treat it as success
-            List<Long> allBackends = GlobalStateMgr.getCurrentSystemInfo().getBackendIds(false);
+            List<Long> allBackends = GlobalStateMgr.getCurrentState().getNodeMgr().getClusterInfo().getBackendIds(false);
             if (!allBackends.isEmpty()) {
                 publishBackends = Sets.newHashSet();
                 publishBackends.addAll(allBackends);
@@ -961,6 +884,7 @@ public class TransactionState implements Writable {
         for (long backendId : publishBackends) {
             PublishVersionTask task = new PublishVersionTask(backendId,
                     this.getTransactionId(),
+                    this.getGlobalTransactionId(),
                     this.getDbId(),
                     commitTime,
                     partitionVersions,
@@ -968,7 +892,8 @@ public class TransactionState implements Writable {
                     txnSpan,
                     createTime,
                     this,
-                    Config.enable_sync_publish);
+                    Config.enable_sync_publish,
+                    this.getTxnType());
             this.addPublishVersionTask(backendId, task);
             tasks.add(task);
         }
@@ -987,30 +912,18 @@ public class TransactionState implements Writable {
         return true;
     }
 
-    // Note: caller should hold db lock
-    public void prepareFinishChecker(Database db) {
-        synchronized (this) {
-            finishChecker = TransactionChecker.create(this, db);
-            checkerCreationTime = System.nanoTime();
-        }
-    }
-
     public boolean checkCanFinish() {
-        // finishChecker may be null if FE restarts
         // finishChecker may require refresh if table/partition is dropped, or index is changed caused by Alter job
-        if (finishChecker == null || System.nanoTime() - checkerCreationTime > 10000000000L) {
-            Database db = GlobalStateMgr.getCurrentState().getDb(dbId);
-            if (db == null) {
-                // consider txn finished if db is dropped
-                return true;
-            }
-            db.readLock();
-            try {
-                prepareFinishChecker(db);
-            } finally {
-                db.readUnlock();
-            }
+        Database db = GlobalStateMgr.getCurrentState().getDb(dbId);
+        if (db == null) {
+            // consider txn finished if db is dropped
+            return true;
         }
+
+        if (finishChecker == null) {
+            finishChecker = TransactionChecker.create(this, db);
+        }
+
         if (finishState == null) {
             finishState = new TxnFinishState();
         }
@@ -1081,5 +994,53 @@ public class TransactionState implements Writable {
 
     public void setWriteDurationMs(long writeDurationMs) {
         this.writeDurationMs = writeDurationMs;
+    }
+
+    public void setUseCombinedTxnLog(boolean useCombinedTxnLog) {
+        this.useCombinedTxnLog = useCombinedTxnLog;
+    }
+
+    public boolean isUseCombinedTxnLog() {
+        return useCombinedTxnLog;
+    }
+
+    public ConcurrentMap<String, TOlapTablePartition> getPartitionNameToTPartition() {
+        return partitionNameToTPartition;
+    }
+
+    public ConcurrentMap<Long, TTabletLocation> getTabletIdToTTabletLocation() {
+        return tabletIdToTTabletLocation;
+    }
+
+    public void clearAutomaticPartitionSnapshot() {
+        partitionNameToTPartition.clear();
+        tabletIdToTTabletLocation.clear();
+    }
+
+    public void lockCreatePartition(String partitionName) {
+        Lock locker = null;
+        synchronized (createPartitionLocks) {
+            locker = createPartitionLocks.get(partitionName);
+            if (locker == null) {
+                locker = new ReentrantLock();
+                createPartitionLocks.put(partitionName, locker);
+            }
+        }
+        locker.lock();
+    }
+
+    public void unlockCreatePartition(String partitionName) {
+        Lock locker = null;
+        synchronized (createPartitionLocks) {
+            locker = createPartitionLocks.get(partitionName);
+        }
+        if (locker != null) {
+            locker.unlock();
+        }
+    }
+
+    @Override
+    public void write(DataOutput out) throws IOException {
+
     }
 }

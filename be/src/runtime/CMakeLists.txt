@@ -73,6 +73,7 @@ set(RUNTIME_FILES
     http_result_writer.cpp
     file_result_writer.cpp
     statistic_result_writer.cpp
+    metadata_result_writer.cpp
     variable_result_writer.cpp
     memory/system_allocator.cpp
     memory/mem_chunk_allocator.cpp
@@ -95,6 +96,8 @@ set(RUNTIME_FILES
     iceberg_table_sink.cpp
     hive_table_sink.cpp
     table_function_table_sink.cpp
+    blackhole_table_sink.cpp
+    dictionary_cache_sink.cpp
 )
 
 set(RUNTIME_FILES ${RUNTIME_FILES}

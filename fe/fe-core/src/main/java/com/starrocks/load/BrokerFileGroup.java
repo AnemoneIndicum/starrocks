@@ -137,9 +137,10 @@ public class BrokerFileGroup implements Writable {
         this.filePaths.add(table.getPath());
 
         this.fileFormat = table.getFormat();
-        this.columnSeparator = "\t";
-        this.rowDelimiter = "\n";
-        this.csvFormat = new CsvFormat((byte) 0, (byte) 0, 0, false);
+        this.columnSeparator = Delimiter.convertDelimiter(table.getCsvColumnSeparator());
+        this.rowDelimiter = Delimiter.convertDelimiter(table.getCsvRowDelimiter());
+        this.csvFormat = new CsvFormat(table.getCsvEnclose(), table.getCsvEscape(),
+                table.getCsvSkipHeader(), table.getCsvTrimSpace());
         this.fileFieldNames = new ArrayList<>();
 
         this.columnExprList = table.getColumnExprList();
@@ -220,8 +221,8 @@ public class BrokerFileGroup implements Writable {
 
         fileFormat = dataDescription.getFileFormat();
         if (fileFormat != null) {
-            if (!fileFormat.toLowerCase().equals("parquet") && !fileFormat.toLowerCase().equals("csv") &&
-                    !fileFormat.toLowerCase().equals("orc")) {
+            String format = fileFormat.toLowerCase();
+            if (!format.equals("parquet") && !format.equals("csv") && !format.equals("orc") && !format.equals("json")) {
                 throw new DdlException("File Format Type " + fileFormat + " is invalid.");
             }
         }

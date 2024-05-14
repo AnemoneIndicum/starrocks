@@ -20,8 +20,10 @@ import com.google.common.collect.Sets;
 import com.starrocks.analysis.BinaryType;
 import com.starrocks.analysis.Expr;
 import com.starrocks.analysis.LiteralExpr;
+import com.starrocks.catalog.ListPartitionInfo;
 import com.starrocks.catalog.Type;
 import com.starrocks.common.AnalysisException;
+import com.starrocks.common.Pair;
 import com.starrocks.connector.exception.StarRocksConnectorException;
 import com.starrocks.planner.PartitionPruner;
 import com.starrocks.sql.optimizer.Utils;
@@ -82,17 +84,27 @@ public class ListPartitionPruner implements PartitionPruner {
     private final Set<Long> allPartitions;
     private final List<ColumnRefOperator> partitionColumnRefs;
     private final List<Long> specifyPartitionIds;
+    private final ListPartitionInfo listPartitionInfo;
 
     public ListPartitionPruner(
             Map<ColumnRefOperator, ConcurrentNavigableMap<LiteralExpr, Set<Long>>> columnToPartitionValuesMap,
             Map<ColumnRefOperator, Set<Long>> columnToNullPartitions,
             List<ScalarOperator> partitionConjuncts, List<Long> specifyPartitionIds) {
+        this(columnToPartitionValuesMap, columnToNullPartitions, partitionConjuncts, specifyPartitionIds, null);
+    }
+
+    public ListPartitionPruner(
+            Map<ColumnRefOperator, ConcurrentNavigableMap<LiteralExpr, Set<Long>>> columnToPartitionValuesMap,
+            Map<ColumnRefOperator, Set<Long>> columnToNullPartitions,
+            List<ScalarOperator> partitionConjuncts, List<Long> specifyPartitionIds,
+            ListPartitionInfo listPartitionInfo) {
         this.columnToPartitionValuesMap = columnToPartitionValuesMap;
         this.columnToNullPartitions = columnToNullPartitions;
         this.partitionConjuncts = partitionConjuncts;
         this.allPartitions = getAllPartitions();
         this.partitionColumnRefs = getPartitionColumnRefs();
         this.specifyPartitionIds = specifyPartitionIds;
+        this.listPartitionInfo = listPartitionInfo;
     }
 
     private Set<Long> getAllPartitions() {
@@ -151,13 +163,18 @@ public class ListPartitionPruner implements PartitionPruner {
                 continue;
             }
 
-            Set<Long> conjunctMatches = evalPartitionPruneFilter(operator);
+            Pair<Set<Long>, Boolean> matchesPair = evalPartitionPruneFilter(operator);
+            Set<Long> conjunctMatches = matchesPair.first;
+            Boolean existNoEvalConjuncts = matchesPair.second;
             LOG.debug("prune by expr: {}, partitions: {}", operator.toString(), conjunctMatches);
             if (conjunctMatches != null) {
                 if (matches == null) {
                     matches = Sets.newHashSet(conjunctMatches);
                 } else {
                     matches.retainAll(conjunctMatches);
+                }
+                if (existNoEvalConjuncts) {
+                    noEvalConjuncts.add(operator);
                 }
             } else {
                 noEvalConjuncts.add(operator);
@@ -183,17 +200,21 @@ public class ListPartitionPruner implements PartitionPruner {
         }
     }
 
-    private Set<Long> evalPartitionPruneFilter(ScalarOperator operator) {
+    private Pair<Set<Long>, Boolean> evalPartitionPruneFilter(ScalarOperator operator) {
+        Set<Long> matches = null;
+        Boolean existNoEval = false;
         if (operator instanceof BinaryPredicateOperator) {
-            return evalBinaryPredicate((BinaryPredicateOperator) operator);
+            matches = evalBinaryPredicate((BinaryPredicateOperator) operator);
         } else if (operator instanceof InPredicateOperator) {
-            return evalInPredicate((InPredicateOperator) operator);
+            matches = evalInPredicate((InPredicateOperator) operator);
         } else if (operator instanceof IsNullPredicateOperator) {
-            return evalIsNullPredicate((IsNullPredicateOperator) operator);
+            matches = evalIsNullPredicate((IsNullPredicateOperator) operator);
         } else if (operator instanceof CompoundPredicateOperator) {
-            return evalCompoundPredicate((CompoundPredicateOperator) operator);
+            Pair<Set<Long>, Boolean> matchesPair = evalCompoundPredicate((CompoundPredicateOperator) operator);
+            matches = matchesPair.first;
+            existNoEval = matchesPair.second;
         }
-        return null;
+        return matches == null ? Pair.create(null, true) : Pair.create(matches, existNoEval);
     }
 
     private boolean isSinglePartitionColumn(ScalarOperator predicate) {
@@ -325,7 +346,20 @@ public class ListPartitionPruner implements PartitionPruner {
                 matches.removeAll(nullPartitions);
                 // remove partition matches literal
                 if (partitionValueMap.containsKey(literal)) {
-                    matches.removeAll(partitionValueMap.get(literal));
+                    if (listPartitionInfo == null) {
+                        // external table
+                        matches.removeAll(partitionValueMap.get(literal));
+                    } else {
+                        Set<Long> partitionIds = partitionValueMap.get(literal);
+                        Map<Long, List<String>> partitionIdToValues = listPartitionInfo.getIdToValues();
+                        for (Long id : partitionIds) {
+                            // if the list partition just has one value, we can prune it
+                            // or we can not prune it because the partition has other values
+                            if (partitionIdToValues.get(id).size() == 1) {
+                                matches.remove(id);
+                            }
+                        }
+                    }
                 }
                 return matches;
             case LE:
@@ -407,6 +441,13 @@ public class ListPartitionPruner implements PartitionPruner {
         Set<Long> matches = Sets.newHashSet();
         ConcurrentNavigableMap<LiteralExpr, Set<Long>> partitionValueMap = columnToPartitionValuesMap.get(child);
         Set<Long> nullPartitions = columnToNullPartitions.get(child);
+
+        if (inPredicate.getChild(0) instanceof CastOperator && partitionValueMap != null) {
+            // partitionValueMap need cast to target type
+            partitionValueMap = getCastPartitionValueMap((CastOperator) inPredicate.getChild(0),
+                    partitionValueMap);
+        }
+
         if (partitionValueMap == null || nullPartitions == null || partitionValueMap.isEmpty()) {
             return null;
         }
@@ -464,33 +505,39 @@ public class ListPartitionPruner implements PartitionPruner {
         return matches;
     }
 
-    private Set<Long> evalCompoundPredicate(CompoundPredicateOperator compoundPredicate) {
+    private Pair<Set<Long>, Boolean> evalCompoundPredicate(CompoundPredicateOperator compoundPredicate) {
         Preconditions.checkNotNull(compoundPredicate);
         if (compoundPredicate.getCompoundType() == CompoundPredicateOperator.CompoundType.NOT) {
-            return null;
+            return Pair.create(null, true);
         }
 
-        Set<Long> lefts = evalPartitionPruneFilter(compoundPredicate.getChild(0));
-        Set<Long> rights = evalPartitionPruneFilter(compoundPredicate.getChild(1));
+        Pair<Set<Long>, Boolean> leftPair = evalPartitionPruneFilter(compoundPredicate.getChild(0));
+        Set<Long> lefts = leftPair.first;
+
+        Pair<Set<Long>, Boolean> rightPair = evalPartitionPruneFilter(compoundPredicate.getChild(1));
+        Set<Long> rights = rightPair.first;
+
+        Boolean existNoEval = leftPair.second || rightPair.second;
+
         if (lefts == null && rights == null) {
-            return null;
+            return Pair.create(null, existNoEval);
         }
 
         if (compoundPredicate.getCompoundType() == CompoundPredicateOperator.CompoundType.AND) {
             if (lefts == null) {
-                return rights;
+                return Pair.create(rights, existNoEval);
             } else if (rights == null) {
-                return lefts;
+                return Pair.create(lefts, existNoEval);
             } else {
                 lefts.retainAll(rights);
             }
         } else if (compoundPredicate.getCompoundType() == CompoundPredicateOperator.CompoundType.OR) {
             if (lefts == null || rights == null) {
-                return null;
+                return Pair.create(null, existNoEval);
             } else {
                 lefts.addAll(rights);
             }
         }
-        return lefts;
+        return Pair.create(lefts, existNoEval);
     }
 }

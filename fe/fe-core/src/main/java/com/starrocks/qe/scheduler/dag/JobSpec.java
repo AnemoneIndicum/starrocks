@@ -22,9 +22,14 @@ import com.starrocks.common.util.DebugUtil;
 import com.starrocks.load.loadv2.BulkLoadJob;
 import com.starrocks.planner.PlanFragment;
 import com.starrocks.planner.ScanNode;
+import com.starrocks.planner.SchemaScanNode;
 import com.starrocks.planner.StreamLoadPlanner;
 import com.starrocks.qe.ConnectContext;
+import com.starrocks.qe.GlobalVariable;
 import com.starrocks.qe.SessionVariable;
+import com.starrocks.qe.scheduler.slot.SlotProvider;
+import com.starrocks.server.GlobalStateMgr;
+import com.starrocks.server.WarehouseManager;
 import com.starrocks.sql.LoadPlanner;
 import com.starrocks.thrift.TCompressionType;
 import com.starrocks.thrift.TDescriptorTable;
@@ -37,6 +42,7 @@ import com.starrocks.thrift.TUniqueId;
 import com.starrocks.thrift.TWorkGroup;
 import org.apache.commons.lang3.StringUtils;
 
+import java.time.Instant;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -47,23 +53,23 @@ import static com.starrocks.qe.CoordinatorPreprocessor.prepareResourceGroup;
 public class JobSpec {
 
     private static final long UNINITIALIZED_LOAD_JOB_ID = -1;
-    private long loadJobId;
+    private long loadJobId = UNINITIALIZED_LOAD_JOB_ID;
 
     private TUniqueId queryId;
 
-    private final List<PlanFragment> fragments;
-    private final List<ScanNode> scanNodes;
+    private List<PlanFragment> fragments;
+    private List<ScanNode> scanNodes;
     /**
      * copied from TQueryExecRequest; constant across all fragments
      */
-    private final TDescriptorTable descTable;
+    private TDescriptorTable descTable;
 
-    private final ConnectContext connectContext;
-    private final boolean enablePipeline;
-    private final boolean enableStreamPipeline;
-    private final boolean isBlockQuery;
+    private ConnectContext connectContext;
+    private boolean enablePipeline;
+    private boolean enableStreamPipeline;
+    private boolean isBlockQuery;
 
-    private final boolean needReport;
+    private boolean needReport;
 
     /**
      * Why we use query global?
@@ -71,11 +77,21 @@ public class JobSpec {
      * but, we execute `NOW()` distributed.
      * So we make a query global value here to make one `now()` value in one query process.
      */
-    private final TQueryGlobals queryGlobals;
-    private final TQueryOptions queryOptions;
-    private final TWorkGroup resourceGroup;
+    private TQueryGlobals queryGlobals;
+    private TQueryOptions queryOptions;
+    private TWorkGroup resourceGroup;
 
-    private final String planProtocol;
+    private long warehouseId = WarehouseManager.DEFAULT_WAREHOUSE_ID;
+
+    public long getWarehouseId() {
+        return warehouseId;
+    }
+
+    private String planProtocol;
+
+    private boolean enableQueue = false;
+    private boolean needQueued = false;
+    private boolean enableGroupLevelQueue = false;
 
     public static class Factory {
         private Factory() {
@@ -89,7 +105,7 @@ public class JobSpec {
             TQueryOptions queryOptions = context.getSessionVariable().toThrift();
             queryOptions.setQuery_type(queryType);
 
-            TQueryGlobals queryGlobals = genQueryGlobals(context.getStartTime(),
+            TQueryGlobals queryGlobals = genQueryGlobals(context.getStartTimeInstant(),
                     context.getSessionVariable().getTimeZone());
             if (context.getLastQueryId() != null) {
                 queryGlobals.setLast_query_id(context.getLastQueryId().toString());
@@ -102,10 +118,12 @@ public class JobSpec {
                     .descTable(descTable)
                     .enableStreamPipeline(false)
                     .isBlockQuery(false)
-                    .needReport(context.getSessionVariable().isEnableProfile())
+                    .needReport(context.getSessionVariable().isEnableProfile() ||
+                            context.getSessionVariable().isEnableBigQueryProfile())
                     .queryGlobals(queryGlobals)
                     .queryOptions(queryOptions)
                     .commonProperties(context)
+                    .warehouseId(context.getCurrentWarehouseId())
                     .setPlanProtocol(context.getSessionVariable().getThriftPlanProtocol())
                     .build();
         }
@@ -116,7 +134,7 @@ public class JobSpec {
                                                        TDescriptorTable descTable) {
             TQueryOptions queryOptions = context.getSessionVariable().toThrift();
 
-            TQueryGlobals queryGlobals = genQueryGlobals(context.getStartTime(),
+            TQueryGlobals queryGlobals = genQueryGlobals(context.getStartTimeInstant(),
                     context.getSessionVariable().getTimeZone());
             if (context.getLastQueryId() != null) {
                 queryGlobals.setLast_query_id(context.getLastQueryId().toString());
@@ -141,13 +159,13 @@ public class JobSpec {
 
             TQueryOptions queryOptions = createBrokerLoadQueryOptions(loadPlanner);
 
-            TQueryGlobals queryGlobals = genQueryGlobals(context.getStartTime(),
+            TQueryGlobals queryGlobals = genQueryGlobals(context.getStartTimeInstant(),
                     context.getSessionVariable().getTimeZone());
             if (context.getLastQueryId() != null) {
                 queryGlobals.setLast_query_id(context.getLastQueryId().toString());
             }
 
-            return new JobSpec.Builder()
+            return new Builder()
                     .loadJobId(loadPlanner.getLoadJobId())
                     .queryId(loadPlanner.getLoadId())
                     .fragments(loadPlanner.getFragments())
@@ -159,6 +177,7 @@ public class JobSpec {
                     .queryGlobals(queryGlobals)
                     .queryOptions(queryOptions)
                     .commonProperties(context)
+                    .warehouseId(loadPlanner.getWarehouseId())
                     .build();
         }
 
@@ -180,7 +199,7 @@ public class JobSpec {
             setSessionVariablesToLoadQueryOptions(queryOptions, sessionVariables);
             queryOptions.setMem_limit(execMemLimit);
 
-            TQueryGlobals queryGlobals = genQueryGlobals(startTime, timezone);
+            TQueryGlobals queryGlobals = genQueryGlobals(Instant.ofEpochMilli(startTime), timezone);
 
             return new JobSpec.Builder()
                     .loadJobId(loadJobId)
@@ -191,6 +210,30 @@ public class JobSpec {
                     .enableStreamPipeline(false)
                     .isBlockQuery(true)
                     .needReport(true)
+                    .queryGlobals(queryGlobals)
+                    .queryOptions(queryOptions)
+                    .warehouseId(context.getCurrentWarehouseId())
+                    .commonProperties(context)
+                    .build();
+        }
+
+        public static JobSpec fromRefreshDictionaryCacheSpec(ConnectContext context,
+                                                             TUniqueId queryId,
+                                                             DescriptorTable descTable,
+                                                             List<PlanFragment> fragments,
+                                                             List<ScanNode> scanNodes) {
+            TQueryOptions queryOptions = context.getSessionVariable().toThrift();
+            TQueryGlobals queryGlobals = genQueryGlobals(context.getStartTimeInstant(),
+                    context.getSessionVariable().getTimeZone());
+
+            return new JobSpec.Builder()
+                    .queryId(queryId)
+                    .fragments(fragments)
+                    .scanNodes(scanNodes)
+                    .descTable(descTable.toThrift())
+                    .enableStreamPipeline(false)
+                    .isBlockQuery(false)
+                    .needReport(false)
                     .queryGlobals(queryGlobals)
                     .queryOptions(queryOptions)
                     .commonProperties(context)
@@ -205,7 +248,8 @@ public class JobSpec {
                                                                String timezone,
                                                                long startTime,
                                                                Map<String, String> sessionVariables,
-                                                               long execMemLimit) {
+                                                               long execMemLimit,
+                                                               long warehouseId) {
             TQueryOptions queryOptions = new TQueryOptions();
             setSessionVariablesToLoadQueryOptions(queryOptions, sessionVariables);
             queryOptions.setQuery_type(TQueryType.LOAD);
@@ -219,9 +263,9 @@ public class JobSpec {
             queryOptions.setMem_limit(execMemLimit);
             queryOptions.setLoad_mem_limit(execMemLimit);
 
-            TQueryGlobals queryGlobals = genQueryGlobals(startTime, timezone);
+            TQueryGlobals queryGlobals = genQueryGlobals(Instant.ofEpochMilli(startTime), timezone);
 
-            return new JobSpec.Builder()
+            return new Builder()
                     .loadJobId(loadJobId)
                     .queryId(queryId)
                     .fragments(fragments)
@@ -233,6 +277,7 @@ public class JobSpec {
                     .queryGlobals(queryGlobals)
                     .queryOptions(queryOptions)
                     .commonProperties(context)
+                    .warehouseId(warehouseId)
                     .build();
         }
 
@@ -252,6 +297,7 @@ public class JobSpec {
                     .queryOptions(null)
                     .enablePipeline(false)
                     .resourceGroup(null)
+                    .warehouseId(planner.getWarehouseId())
                     .build();
         }
 
@@ -260,7 +306,7 @@ public class JobSpec {
                                           List<ScanNode> scanNodes) {
             TQueryOptions queryOptions = context.getSessionVariable().toThrift();
 
-            TQueryGlobals queryGlobals = genQueryGlobals(context.getStartTime(),
+            TQueryGlobals queryGlobals = genQueryGlobals(context.getStartTimeInstant(),
                     context.getSessionVariable().getTimeZone());
             if (context.getLastQueryId() != null) {
                 queryGlobals.setLast_query_id(context.getLastQueryId().toString());
@@ -276,7 +322,7 @@ public class JobSpec {
                     .needReport(false)
                     .queryGlobals(queryGlobals)
                     .queryOptions(queryOptions)
-                    .enablePipeline(true)
+                    .enablePipeline(context.getSessionVariable().isEnablePipelineEngine())
                     .resourceGroup(null)
                     .build();
         }
@@ -322,25 +368,7 @@ public class JobSpec {
         }
     }
 
-    private JobSpec(Builder builder) {
-        this.loadJobId = builder.loadJobId;
-
-        this.queryId = builder.queryId;
-
-        this.fragments = builder.fragments;
-        this.scanNodes = builder.scanNodes;
-        this.descTable = builder.descTable;
-
-        this.enablePipeline = builder.enablePipeline;
-        this.enableStreamPipeline = builder.enableStreamPipeline;
-        this.isBlockQuery = builder.isBlockQuery;
-        this.needReport = builder.needReport;
-        this.connectContext = builder.connectContext;
-
-        this.queryGlobals = builder.queryGlobals;
-        this.queryOptions = builder.queryOptions;
-        this.resourceGroup = builder.resourceGroup;
-        this.planProtocol = builder.planProtocol;
+    private JobSpec() {
     }
 
     @Override
@@ -352,6 +380,7 @@ public class JobSpec {
                 ", enableStreamPipeline=" + enableStreamPipeline +
                 ", isBlockQuery=" + isBlockQuery +
                 ", resourceGroup=" + resourceGroup +
+                ", warehouseId=" + warehouseId +
                 '}';
     }
 
@@ -435,8 +464,16 @@ public class JobSpec {
         return connectContext.isStatisticsJob();
     }
 
+    public boolean isEnableQueue() {
+        return enableQueue;
+    }
+
     public boolean isNeedQueued() {
-        return connectContext.isNeedQueued();
+        return needQueued;
+    }
+
+    public boolean isEnableGroupLevelQueue() {
+        return enableGroupLevelQueue;
     }
 
     public boolean isStreamLoad() {
@@ -451,57 +488,60 @@ public class JobSpec {
         fragments.forEach(PlanFragment::reset);
     }
 
+    public SlotProvider getSlotProvider() {
+        if (!isNeedQueued() || !isEnableQueue()) {
+            return GlobalStateMgr.getCurrentState().getLocalSlotProvider();
+        } else {
+            return GlobalStateMgr.getCurrentState().getGlobalSlotProvider();
+        }
+    }
+    public boolean hasOlapTableSink() {
+        for (PlanFragment fragment : fragments) {
+            if (fragment.hasOlapTableSink()) {
+                return true;
+            }
+        }
+        return false;
+    }
     public static class Builder {
-        private long loadJobId = UNINITIALIZED_LOAD_JOB_ID;
-
-        private TUniqueId queryId;
-        private List<PlanFragment> fragments;
-        private List<ScanNode> scanNodes;
-        private TDescriptorTable descTable;
-
-        private boolean enablePipeline;
-        private boolean enableStreamPipeline;
-        private boolean isBlockQuery;
-        private boolean needReport;
-        private ConnectContext connectContext;
-
-        private TQueryGlobals queryGlobals;
-        private TQueryOptions queryOptions;
-        private TWorkGroup resourceGroup;
-        private String planProtocol;
+        private final JobSpec instance = new JobSpec();
 
         public JobSpec build() {
-            return new JobSpec(this);
+            return instance;
         }
 
         public Builder commonProperties(ConnectContext context) {
             TWorkGroup newResourceGroup = prepareResourceGroup(
-                    context, ResourceGroupClassifier.QueryType.fromTQueryType(queryOptions.getQuery_type()));
+                    context, ResourceGroupClassifier.QueryType.fromTQueryType(instance.queryOptions.getQuery_type()));
             this.resourceGroup(newResourceGroup);
 
-            this.enablePipeline(isEnablePipeline(context, fragments));
-            this.connectContext = context;
+            this.enablePipeline(isEnablePipeline(context, instance.fragments));
+            instance.connectContext = context;
+
+            instance.enableQueue = isEnableQueue(context);
+            instance.needQueued = needCheckQueue();
+            instance.enableGroupLevelQueue = instance.enableQueue && GlobalVariable.isEnableGroupLevelQueryQueue();
 
             return this;
         }
 
         public Builder loadJobId(long loadJobId) {
-            this.loadJobId = loadJobId;
+            instance.loadJobId = loadJobId;
             return this;
         }
 
         public Builder queryId(TUniqueId queryId) {
-            this.queryId = Preconditions.checkNotNull(queryId);
+            instance.queryId = Preconditions.checkNotNull(queryId);
             return this;
         }
 
         public Builder fragments(List<PlanFragment> fragments) {
-            this.fragments = fragments;
+            instance.fragments = fragments;
             return this;
         }
 
         public Builder scanNodes(List<ScanNode> scanNodes) {
-            this.scanNodes = scanNodes;
+            instance.scanNodes = scanNodes;
             return this;
         }
 
@@ -509,47 +549,52 @@ public class JobSpec {
             if (descTable != null) {
                 descTable.setIs_cached(false);
             }
-            this.descTable = descTable;
+            instance.descTable = descTable;
             return this;
         }
 
         public Builder enableStreamPipeline(boolean enableStreamPipeline) {
-            this.enableStreamPipeline = enableStreamPipeline;
+            instance.enableStreamPipeline = enableStreamPipeline;
             return this;
         }
 
         public Builder isBlockQuery(boolean isBlockQuery) {
-            this.isBlockQuery = isBlockQuery;
+            instance.isBlockQuery = isBlockQuery;
             return this;
         }
 
         public Builder queryGlobals(TQueryGlobals queryGlobals) {
-            this.queryGlobals = queryGlobals;
+            instance.queryGlobals = queryGlobals;
             return this;
         }
 
         public Builder queryOptions(TQueryOptions queryOptions) {
-            this.queryOptions = queryOptions;
+            instance.queryOptions = queryOptions;
             return this;
         }
 
         private Builder enablePipeline(boolean enablePipeline) {
-            this.enablePipeline = enablePipeline;
+            instance.enablePipeline = enablePipeline;
             return this;
         }
 
         private Builder resourceGroup(TWorkGroup resourceGroup) {
-            this.resourceGroup = resourceGroup;
+            instance.resourceGroup = resourceGroup;
+            return this;
+        }
+
+        private Builder warehouseId(long warehouseId) {
+            instance.warehouseId = warehouseId;
             return this;
         }
 
         private Builder needReport(boolean needReport) {
-            this.needReport = needReport;
+            instance.needReport = needReport;
             return this;
         }
 
         private Builder setPlanProtocol(String planProtocol) {
-            this.planProtocol = StringUtils.lowerCase(planProtocol);
+            instance.planProtocol = StringUtils.lowerCase(planProtocol);
             return this;
         }
 
@@ -565,6 +610,34 @@ public class JobSpec {
             return connectContext != null &&
                     connectContext.getSessionVariable().isEnablePipelineEngine() &&
                     fragments.stream().allMatch(PlanFragment::canUsePipeline);
+        }
+
+        private boolean isEnableQueue(ConnectContext connectContext) {
+            if (connectContext != null && connectContext.getSessionVariable() != null &&
+                    !connectContext.getSessionVariable().isEnableQueryQueue()) {
+                return false;
+            }
+            if (instance.isStatisticsJob()) {
+                return GlobalVariable.isEnableQueryQueueStatistic();
+            }
+
+            if (instance.isLoadType()) {
+                return GlobalVariable.isEnableQueryQueueLoad();
+            }
+
+            return GlobalVariable.isEnableQueryQueueSelect();
+        }
+
+        private boolean needCheckQueue() {
+            if (!instance.connectContext.isNeedQueued()) {
+                return false;
+            }
+
+            // The queries only using schema meta will never been queued, because a MySQL client will
+            // query schema meta after the connection is established.
+            boolean notNeed =
+                    instance.scanNodes.isEmpty() || instance.scanNodes.stream().allMatch(SchemaScanNode.class::isInstance);
+            return !notNeed;
         }
     }
 

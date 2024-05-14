@@ -60,6 +60,7 @@
 #include "runtime/runtime_filter_worker.h"
 #include "service/backend_options.h"
 #include "util/misc.h"
+#include "util/network_util.h"
 #include "util/starrocks_metrics.h"
 #include "util/stopwatch.hpp"
 #include "util/thread.h"
@@ -75,7 +76,7 @@ std::string to_load_error_http_path(const std::string& file_name) {
         return "";
     }
     std::stringstream url;
-    url << "http://" << BackendOptions::get_localhost() << ":" << config::be_http_port << "/api/_load_error_log?"
+    url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_load_error_log?"
         << "file=" << file_name;
     return url.str();
 }
@@ -223,7 +224,7 @@ void FragmentExecState::callback(const Status& status, RuntimeProfile* profile, 
 
 std::string FragmentExecState::to_http_path(const std::string& file_name) {
     std::stringstream url;
-    url << "http://" << BackendOptions::get_localhost() << ":" << config::be_http_port << "/api/_download_load?"
+    url << "http://" << get_host_port(BackendOptions::get_localhost(), config::be_http_port) << "/api/_download_load?"
         << "token=" << _exec_env->token() << "&file=" << file_name;
     return url.str();
 }
@@ -237,7 +238,8 @@ void FragmentExecState::coordinator_callback(const Status& status, RuntimeProfil
     Status exec_status = update_status(status);
 
     Status coord_status;
-    FrontendServiceConnection coord(_exec_env->frontend_client_cache(), _coord_addr, &coord_status);
+    FrontendServiceConnection coord(_exec_env->frontend_client_cache(), _coord_addr, config::thrift_rpc_timeout_ms,
+                                    &coord_status);
     if (!coord_status.ok()) {
         std::stringstream ss;
         ss << "couldn't get a client for " << _coord_addr;
@@ -327,7 +329,7 @@ void FragmentExecState::coordinator_callback(const Status& status, RuntimeProfil
             coord->reportExecStatus(res, params);
         } catch (TTransportException& e) {
             LOG(WARNING) << "Retrying ReportExecStatus: " << e.what();
-            rpc_status = coord.reopen();
+            rpc_status = coord.reopen(config::thrift_rpc_timeout_ms);
 
             if (!rpc_status.ok()) {
                 // we need to cancel the execution of this fragment
@@ -452,6 +454,10 @@ Status FragmentMgr::exec_plan_fragment(const TExecPlanFragmentParams& params, co
             // Duplicated
             return Status::InternalError("Double execute");
         }
+        // check if shutting down in progress under the lock
+        if (_closed) {
+            return Status::Cancelled("FragmentManager shutdown in progress.");
+        }
         // register exec_state before starting exec thread
         _fragment_map.insert(std::make_pair(fragment_instance_id, exec_state));
     }
@@ -460,7 +466,7 @@ Status FragmentMgr::exec_plan_fragment(const TExecPlanFragmentParams& params, co
     if (!st.ok()) {
         exec_state->cancel(PPlanFragmentCancelReason::INTERNAL_ERROR);
         std::string error_msg = strings::Substitute("Put planfragment $0 to thread pool failed. err = $1",
-                                                    print_id(fragment_instance_id), st.get_error_msg());
+                                                    print_id(fragment_instance_id), st.message());
         LOG(WARNING) << error_msg;
         {
             // Remove the exec state added
@@ -537,10 +543,21 @@ void FragmentMgr::receive_runtime_filter(const PTransmitRuntimeFilterParams& par
 }
 
 void FragmentMgr::close() {
-    std::lock_guard<std::mutex> lock(_lock);
-    for (auto& it : _fragment_map) {
-        WARN_IF_ERROR(cancel(it.second->fragment_instance_id(), PPlanFragmentCancelReason::USER_CANCEL),
-                      strings::Substitute("Fail to cancel fragment $0", print_id(it.first)));
+    std::vector<TUniqueId> frag_instance_ids;
+    {
+        std::lock_guard<std::mutex> lock(_lock);
+        // reject all fragments from now on.
+        // expect no fragment can be added into `_fragment_map` after the lock is released.
+        _closed = true;
+        frag_instance_ids.reserve(_fragment_map.size());
+        for (auto& it : _fragment_map) {
+            frag_instance_ids.push_back(it.first);
+        }
+    }
+    // cancel all the fragments without lock.
+    for (auto& id : frag_instance_ids) {
+        WARN_IF_ERROR(cancel(id, PPlanFragmentCancelReason::USER_CANCEL),
+                      strings::Substitute("Fail to cancel fragment $0", print_id(id)));
     }
 }
 
@@ -688,7 +705,8 @@ void FragmentMgr::report_fragments(const std::vector<TUniqueId>& non_pipeline_ne
             Status fe_connection_status;
 
             FrontendServiceConnection fe_connection(fragment_exec_state->exec_env()->frontend_client_cache(),
-                                                    fragment_exec_state->coord_addr(), &fe_connection_status);
+                                                    fragment_exec_state->coord_addr(), config::thrift_rpc_timeout_ms,
+                                                    &fe_connection_status);
             if (!fe_connection_status.ok()) {
                 std::stringstream ss;
                 ss << "couldn't get a client for " << fragment_exec_state->coord_addr();
@@ -742,7 +760,7 @@ void FragmentMgr::report_fragments(const std::vector<TUniqueId>& non_pipeline_ne
                     fe_connection->batchReportExecStatus(res, report_batch);
                 } catch (TTransportException& e) {
                     LOG(WARNING) << "Retrying ReportExecStatus: " << e.what();
-                    rpc_status = fe_connection.reopen();
+                    rpc_status = fe_connection.reopen(config::thrift_rpc_timeout_ms);
                     if (!rpc_status.ok()) {
                         continue;
                     }
@@ -793,6 +811,16 @@ void FragmentMgr::debug(std::stringstream& ss) {
  */
 Status FragmentMgr::exec_external_plan_fragment(const TScanOpenParams& params, const TUniqueId& fragment_instance_id,
                                                 std::vector<TScanColumnDesc>* selected_columns, TUniqueId* query_id) {
+    // check chunk size first
+    if (UNLIKELY(!params.__isset.batch_size)) {
+        return Status::InvalidArgument("batch_size is not set");
+    }
+    auto batch_size = params.batch_size;
+    if (UNLIKELY(batch_size <= 0 || batch_size > MAX_CHUNK_SIZE)) {
+        return Status::InvalidArgument(
+                fmt::format("batch_size is out of range, it must be in the range (0, {}], current value is [{}]",
+                            MAX_CHUNK_SIZE, batch_size));
+    }
     const std::string& opaqued_query_plan = params.opaqued_query_plan;
     std::string query_plan_info;
     // base64 decode query plan
@@ -831,6 +859,8 @@ Status FragmentMgr::exec_external_plan_fragment(const TScanOpenParams& params, c
         return Status::InvalidArgument(msg.str());
     }
 
+    const auto& output_names = t_query_plan_info.output_names;
+    int i = 0;
     for (const auto& expr : t_query_plan_info.plan_fragment.output_exprs) {
         const auto& nodes = expr.nodes;
         if (nodes.empty() || nodes[0].node_type != TExprNodeType::SLOT_REF) {
@@ -850,9 +880,14 @@ Status FragmentMgr::exec_external_plan_fragment(const TScanOpenParams& params, c
         }
 
         TScanColumnDesc col;
-        col.__set_name(slot_desc->col_name());
+        if (!output_names.empty()) {
+            col.__set_name(output_names[i]);
+        } else {
+            col.__set_name(slot_desc->col_name());
+        }
         col.__set_type(to_thrift(slot_desc->type().type));
         selected_columns->emplace_back(std::move(col));
+        i++;
     }
 
     LOG(INFO) << "BackendService execute open()  TQueryPlanInfo: "
@@ -914,6 +949,7 @@ Status FragmentMgr::exec_external_plan_fragment(const TScanOpenParams& params, c
     // For spark sql / flink sql, we dont use page cache.
     query_options.use_page_cache = false;
     query_options.use_column_pool = false;
+    query_options.enable_profile = config::enable_profile_for_external_plan;
     exec_fragment_params.__set_query_options(query_options);
     VLOG_ROW << "external exec_plan_fragment params is "
              << apache::thrift::ThriftDebugString(exec_fragment_params).c_str();

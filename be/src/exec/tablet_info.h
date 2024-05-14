@@ -44,8 +44,10 @@ struct OlapTableColumnParam {
 struct OlapTableIndexSchema {
     int64_t index_id;
     std::vector<SlotDescriptor*> slots;
+    int64_t schema_id;
     int32_t schema_hash;
     OlapTableColumnParam* column_param;
+    ExprContext* where_clause = nullptr;
 
     void to_protobuf(POlapTableIndexSchema* pindex) const;
 };
@@ -55,7 +57,7 @@ public:
     OlapTableSchemaParam() = default;
     ~OlapTableSchemaParam() noexcept = default;
 
-    Status init(const TOlapTableSchemaParam& tschema);
+    Status init(const TOlapTableSchemaParam& tschema, RuntimeState* state = nullptr);
     Status init(const POlapTableSchemaParam& pschema);
 
     int64_t db_id() const { return _db_id; }
@@ -233,6 +235,8 @@ public:
     Status remove_partitions(const std::vector<int64_t>& partition_ids);
 
     bool is_un_partitioned() const { return _partition_columns.empty(); }
+
+    const TOlapTablePartitionParam& param() const { return _t_param; }
 
 private:
     Status _create_partition_keys(const std::vector<TExprNode>& t_exprs, ChunkRow* part_key);

@@ -17,8 +17,10 @@
 #include <bthread/bthread.h>
 
 #include <chrono>
+#include <string_view>
 
 #include "fmt/core.h"
+#include "util/defer_op.h"
 #include "util/time.h"
 #include "util/uid_util.h"
 
@@ -30,7 +32,9 @@ SinkBuffer::SinkBuffer(FragmentContext* fragment_ctx, const std::vector<TPlanFra
           _mem_tracker(fragment_ctx->runtime_state()->instance_mem_tracker()),
           _brpc_timeout_ms(fragment_ctx->runtime_state()->query_options().query_timeout * 1000),
           _is_dest_merge(is_dest_merge),
-          _rpc_http_min_size(fragment_ctx->runtime_state()->get_rpc_http_min_size()) {
+          _rpc_http_min_size(fragment_ctx->runtime_state()->get_rpc_http_min_size()),
+          _sent_audit_stats_frequency_upper_limit(
+                  std::max((int64_t)64, BitUtil::RoundUpToPowerOfTwo(fragment_ctx->total_dop() * 4))) {
     for (const auto& dest : destinations) {
         const auto& instance_id = dest.fragment_instance_id;
         // instance_id.lo == -1 indicates that the destination is pseudo for bucket shuffle join.
@@ -48,7 +52,6 @@ SinkBuffer::SinkBuffer(FragmentContext* fragment_ctx, const std::vector<TPlanFra
             _num_finished_rpcs[instance_id.lo] = 0;
             _num_in_flight_rpcs[instance_id.lo] = 0;
             _network_times[instance_id.lo] = TimeTrace{};
-            _eos_query_stats[instance_id.lo] = std::make_shared<QueryStatistics>();
             _mutexes[instance_id.lo] = std::make_unique<Mutex>();
             _dest_addrs[instance_id.lo] = dest.brpc_server;
 
@@ -67,12 +70,7 @@ SinkBuffer::~SinkBuffer() {
 
     DCHECK(is_finished());
 
-    {
-        // Since the deallocation of _buffers may happen inside bthread, make sure all the allocations and
-        // deallocations are executed using the process level MemTracker
-        SCOPED_THREAD_LOCAL_MEM_TRACKER_SETTER(nullptr);
-        _buffers.clear();
-    }
+    _buffers.clear();
 }
 
 void SinkBuffer::incr_sinker(RuntimeState* state) {
@@ -93,13 +91,21 @@ Status SinkBuffer::add_request(TransmitChunkInfo& request) {
         _request_enqueued++;
     }
     {
+        // set stats every _sent_audit_stats_frequency, so FE can get approximate stats even missing eos chunks.
+        // _sent_audit_stats_frequency grows exponentially to reduce the costs of collecting stats but
+        // let the first (limited) chunks' stats approach truth。
+        auto request_sequence = _request_sequence++;
+        if (!request.params->eos() && (request_sequence & (_sent_audit_stats_frequency - 1)) == 0) {
+            if (_sent_audit_stats_frequency < _sent_audit_stats_frequency_upper_limit) {
+                _sent_audit_stats_frequency = _sent_audit_stats_frequency << 1;
+            }
+            if (auto part_stats = _fragment_ctx->runtime_state()->query_ctx()->intermediate_query_statistic()) {
+                part_stats->to_pb(request.params->mutable_query_statistics());
+            }
+        }
+
         auto& instance_id = request.fragment_instance_id;
-        RETURN_IF_ERROR(_try_to_send_rpc(instance_id, [&]() {
-            // Since the deallocation of _buffers may happen inside bthread, make sure all the allocations and
-            // deallocations are executed using the process level MemTracker
-            SCOPED_THREAD_LOCAL_MEM_TRACKER_SETTER(nullptr);
-            _buffers[instance_id.lo].push(request);
-        }));
+        RETURN_IF_ERROR(_try_to_send_rpc(instance_id, [&]() { _buffers[instance_id.lo].push(request); }));
     }
 
     return Status::OK();
@@ -204,12 +210,39 @@ int64_t SinkBuffer::_network_time() {
 void SinkBuffer::cancel_one_sinker(RuntimeState* const state) {
     if (--_num_uncancelled_sinkers == 0) {
         _is_finishing = true;
+        if (state != nullptr && state->query_ctx() && state->query_ctx()->is_query_expired()) {
+            // how many in-flight rpcs and what exchange receivers are.
+            if (_total_in_flight_rpc > 0) {
+                std::stringstream ss;
+                auto remain_rpc_num = 0;
+                for (auto& remain_rpc : _num_in_flight_rpcs) {
+                    std::lock_guard<Mutex> l(*_mutexes[remain_rpc.first]);
+                    if (remain_rpc.second > 0) {
+                        ss << (remain_rpc_num > 0 ? ", " : "") << print_id(_instance_id2finst_id[remain_rpc.first]);
+                        remain_rpc_num++;
+                    }
+                }
+                LOG(WARNING) << "Fragment " << print_id(_fragment_ctx->fragment_instance_id()) << " SinkBuffer remains "
+                             << remain_rpc_num << " rpcs, dest are " << ss.str();
+            }
+            // how many alive drivers left and what they are.
+            if (_num_remaining_eos > 0) {
+                std::stringstream ss;
+                for (auto& remain_eos : _num_sinkers) {
+                    ss << print_id(_instance_id2finst_id[remain_eos.first]) << "(" << remain_eos.second << "),";
+                }
+                LOG(WARNING) << "Fragment " << print_id(_fragment_ctx->fragment_instance_id())
+                             << " remains EOS : " << ss.str();
+            }
+        }
     }
-    if (state != nullptr) {
+    if (state != nullptr && state->query_ctx() && state->query_ctx()->is_query_expired()) {
+        // check how many cancel operations are issued, and show the state of that time.
         LOG(INFO) << fmt::format(
-                "fragment_instance_id {} -> {}, _num_uncancelled_sinkers {}, _is_finishing {}, _num_remaining_eos {}",
-                print_id(_fragment_ctx->fragment_instance_id()), print_id(state->fragment_instance_id()),
-                _num_uncancelled_sinkers, _is_finishing, _num_remaining_eos);
+                "fragment_instance_id {}, _num_uncancelled_sinkers {}, _is_finishing {}, _num_remaining_eos {}, "
+                "_num_sending_rpc {}, chunk is full {}",
+                print_id(_fragment_ctx->fragment_instance_id()), _num_uncancelled_sinkers, _is_finishing,
+                _num_remaining_eos, _num_sending_rpc, is_full());
     }
 }
 
@@ -237,31 +270,6 @@ void SinkBuffer::_process_send_window(const TUniqueId& instance_id, const int64_
     while ((it = seqs.find(max_continuous_acked_seq + 1)) != seqs.end()) {
         seqs.erase(it);
         ++max_continuous_acked_seq;
-    }
-}
-
-void SinkBuffer::_try_to_merge_query_statistics(TransmitChunkInfo& request) {
-    if (!request.params->has_query_statistics()) {
-        return;
-    }
-    auto& query_statistics = request.params->query_statistics();
-    bool need_merge = false;
-    if (query_statistics.scan_rows() > 0 || query_statistics.scan_bytes() > 0 || query_statistics.cpu_cost_ns() > 0) {
-        need_merge = true;
-    }
-    if (!need_merge && query_statistics.stats_items_size() > 0) {
-        for (int i = 0; i < query_statistics.stats_items_size(); i++) {
-            const auto& stats_item = query_statistics.stats_items(i);
-            if (stats_item.scan_rows() > 0 || stats_item.scan_bytes()) {
-                need_merge = true;
-                break;
-            }
-        }
-    }
-    if (need_merge) {
-        auto& instance_id = request.fragment_instance_id;
-        _eos_query_stats[instance_id.lo]->merge_pb(query_statistics);
-        request.params->clear_query_statistics();
     }
 }
 
@@ -296,17 +304,16 @@ Status SinkBuffer::_try_to_send_rpc(const TUniqueId& instance_id, const std::fun
 
         TransmitChunkInfo& request = buffer.front();
         bool need_wait = false;
-        DeferOp pop_defer([&need_wait, &buffer]() {
+        DeferOp pop_defer([&need_wait, &buffer, mem_tracker = _mem_tracker]() {
             if (need_wait) {
                 return;
             }
 
-            {
-                // Since the deallocation of _buffers may happen inside bthread, make sure all the allocations and
-                // deallocations are executed using the process level MemTracker
-                SCOPED_THREAD_LOCAL_MEM_TRACKER_SETTER(nullptr);
-                buffer.pop();
-            }
+            // The request memory is acquired by ExchangeSinkOperator,
+            // so use the instance_mem_tracker passed from ExchangeSinkOperator to release memory.
+            // This must be invoked before decrease_defer desctructed to avoid sink_buffer and fragment_ctx released.
+            SCOPED_THREAD_LOCAL_MEM_TRACKER_SETTER(mem_tracker);
+            buffer.pop();
         });
 
         // The order of data transmiting in IO level may not be strictly the same as
@@ -330,8 +337,6 @@ Status SinkBuffer::_try_to_send_rpc(const TUniqueId& instance_id, const std::fun
             // eos is the last packet to send to finish the input stream of the corresponding of
             // ExchangeSourceOperator and eos is sent exactly-once.
             if (_num_sinkers[instance_id.lo] > 1) {
-                // to reduce uncessary rpc requests, we merge all query statistics in eos requests into one and send it through the last eos request
-                _try_to_merge_query_statistics(request);
                 if (request.params->chunks_size() == 0) {
                     continue;
                 } else {
@@ -346,10 +351,9 @@ Status SinkBuffer::_try_to_send_rpc(const TUniqueId& instance_id, const std::fun
                     return Status::OK();
                 }
                 // this is the last eos query, set query stats
-                _eos_query_stats[instance_id.lo]->merge_pb(request.params->query_statistics());
-                request.params->clear_query_statistics();
-                _eos_query_stats[instance_id.lo]->to_pb(request.params->mutable_query_statistics());
-                _eos_query_stats[instance_id.lo]->clear();
+                if (auto final_stats = _fragment_ctx->runtime_state()->query_ctx()->intermediate_query_statistic()) {
+                    final_stats->to_pb(request.params->mutable_query_statistics());
+                }
             }
         }
 
@@ -367,23 +371,26 @@ Status SinkBuffer::_try_to_send_rpc(const TUniqueId& instance_id, const std::fun
             _first_send_time = MonotonicNanos();
         }
 
-        closure->addFailedHandler([this](const ClosureContext& ctx) noexcept {
+        closure->addFailedHandler([this](const ClosureContext& ctx, std::string_view rpc_error_msg) noexcept {
+            auto defer = DeferOp([this]() { --_total_in_flight_rpc; });
             _is_finishing = true;
             {
                 std::lock_guard<Mutex> l(*_mutexes[ctx.instance_id.lo]);
                 ++_num_finished_rpcs[ctx.instance_id.lo];
                 --_num_in_flight_rpcs[ctx.instance_id.lo];
             }
-            --_total_in_flight_rpc;
 
             const auto& dest_addr = _dest_addrs[ctx.instance_id.lo];
-            std::string err_msg = fmt::format("transmit chunk rpc failed [dest_instance_id={}] [dest={}:{}]",
-                                              print_id(ctx.instance_id), dest_addr.hostname, dest_addr.port);
+            std::string err_msg =
+                    fmt::format("transmit chunk rpc failed [dest_instance_id={}] [dest={}:{}] detail:{}",
+                                print_id(ctx.instance_id), dest_addr.hostname, dest_addr.port, rpc_error_msg);
 
             _fragment_ctx->cancel(Status::ThriftRpcError(err_msg));
             LOG(WARNING) << err_msg;
         });
         closure->addSuccessHandler([this](const ClosureContext& ctx, const PTransmitChunkResult& result) noexcept {
+            // when _total_in_flight_rpc desc to 0, _fragment_ctx may be destructed
+            auto defer = DeferOp([this]() { --_total_in_flight_rpc; });
             Status status(result.status());
             {
                 std::lock_guard<Mutex> l(*_mutexes[ctx.instance_id.lo]);
@@ -404,7 +411,6 @@ Status SinkBuffer::_try_to_send_rpc(const TUniqueId& instance_id, const std::fun
                     _process_send_window(ctx.instance_id, ctx.sequence);
                 }));
             }
-            --_total_in_flight_rpc;
         });
 
         ++_total_in_flight_rpc;
@@ -422,7 +428,6 @@ Status SinkBuffer::_try_to_send_rpc(const TUniqueId& instance_id, const std::fun
         if (bthread_self()) {
             st = _send_rpc(closure, request);
         } else {
-            // Since the deallocation of protobuf request must be done in the bthread.
             // When the driver worker thread sends request and creates the protobuf request,
             // also use process_mem_tracker to record the memory of the protobuf request.
             SCOPED_THREAD_LOCAL_MEM_TRACKER_SETTER(nullptr);
@@ -458,7 +463,7 @@ Status SinkBuffer::_send_rpc(DisposableClosure<PTransmitChunkResult, ClosureCont
         }
         closure->cntl.http_request().set_content_type("application/proto");
         // create http_stub as needed
-        auto res = BrpcStubCache::create_http_stub(request.brpc_addr);
+        auto res = HttpBrpcStubCache::getInstance()->get_http_stub(request.brpc_addr);
         if (!res.ok()) {
             return res.status();
         }

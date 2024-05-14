@@ -44,7 +44,6 @@ import com.starrocks.common.Pair;
 import com.starrocks.mysql.MysqlColType;
 import com.starrocks.proto.PScalarType;
 import com.starrocks.proto.PTypeDesc;
-import com.starrocks.sql.common.TypeManager;
 import com.starrocks.thrift.TColumnType;
 import com.starrocks.thrift.TPrimitiveType;
 import com.starrocks.thrift.TScalarType;
@@ -120,7 +119,7 @@ public abstract class Type implements Cloneable {
             ScalarType.createDecimalV3Type(PrimitiveType.DECIMAL128, 38, 0);
 
     public static final ScalarType VARCHAR = ScalarType.createVarcharType(-1);
-    public static final ScalarType STRING = ScalarType.createVarcharType(ScalarType.MAX_VARCHAR_LENGTH);
+    public static final ScalarType STRING = ScalarType.createVarcharType(ScalarType.getOlapMaxVarcharLength());
     public static final ScalarType DEFAULT_STRING = ScalarType.createDefaultString();
     public static final ScalarType HLL = ScalarType.createHllType();
     public static final ScalarType CHAR = ScalarType.createCharType(-1);
@@ -569,6 +568,12 @@ public abstract class Type implements Cloneable {
      */
     protected abstract String toSql(int depth);
 
+    public final String toTypeString() {
+        return toTypeString(0);
+    }
+
+    protected abstract String toTypeString(int depth);
+    
     /**
      * Same as toSql() but adds newlines and spaces for better readability of nested types.
      */
@@ -895,10 +900,6 @@ public abstract class Type implements Cloneable {
         return isFixedPointType() || isDecimalV2() || isDecimalV3();
     }
 
-    public boolean isNativeType() {
-        return isFixedPointType() || isFloatingPointType() || isBoolean();
-    }
-
     public boolean isDateType() {
         return isScalarType(PrimitiveType.DATE) || isScalarType(PrimitiveType.DATETIME);
     }
@@ -986,20 +987,6 @@ public abstract class Type implements Cloneable {
 
     public PrimitiveType getPrimitiveType() {
         return PrimitiveType.INVALID_TYPE;
-    }
-
-    /**
-     * Returns the size in bytes of the fixed-length portion that a slot of this type
-     * occupies in a tuple.
-     */
-    public int getSlotSize() {
-        // 8-byte pointer and 4-byte length indicator (12 bytes total).
-        // Per struct alignment rules, there is an extra 4 bytes of padding to align to 8
-        // bytes so 16 bytes total.
-        if (isComplexType()) {
-            return 16;
-        }
-        throw new IllegalStateException("getSlotSize() not implemented for type " + toSql());
     }
 
     // Return type data size, used for compute optimizer column statistics
@@ -1497,55 +1484,6 @@ public abstract class Type implements Cloneable {
         }
     }
 
-    public static Type getCmpType(Type t1, Type t2) {
-        if (t1.getPrimitiveType() == PrimitiveType.NULL_TYPE) {
-            return t2;
-        }
-        if (t2.getPrimitiveType() == PrimitiveType.NULL_TYPE) {
-            return t1;
-        }
-
-        if (t1.isScalarType() && t2.isScalarType() && (t1.isDecimalV3() || t2.isDecimalV3())) {
-            return getAssignmentCompatibleType(t1, t2, false);
-        }
-
-        if (t1.getPrimitiveType() != PrimitiveType.INVALID_TYPE && t1.getPrimitiveType().equals(t2.getPrimitiveType())) {
-            return t1;
-        }
-
-        if (t1.isJsonType() || t2.isJsonType()) {
-            return JSON;
-        }
-
-        if (t1.isComplexType() || t2.isComplexType()) {
-            return TypeManager.getCommonSuperType(t1, t2);
-        }
-
-        PrimitiveType t1ResultType = t1.getResultType().getPrimitiveType();
-        PrimitiveType t2ResultType = t2.getResultType().getPrimitiveType();
-        // Following logical is compatible with MySQL.
-        if ((t1ResultType == PrimitiveType.VARCHAR && t2ResultType == PrimitiveType.VARCHAR)) {
-            return Type.VARCHAR;
-        }
-        if (t1ResultType == PrimitiveType.BIGINT && t2ResultType == PrimitiveType.BIGINT) {
-            return getAssignmentCompatibleType(t1, t2, false);
-        }
-
-        if ((t1ResultType == PrimitiveType.BIGINT
-                || t1ResultType == PrimitiveType.DECIMALV2)
-                && (t2ResultType == PrimitiveType.BIGINT
-                || t2ResultType == PrimitiveType.DECIMALV2)) {
-            return Type.DECIMALV2;
-        }
-        if ((t1ResultType == PrimitiveType.BIGINT
-                || t1ResultType == PrimitiveType.LARGEINT)
-                && (t2ResultType == PrimitiveType.BIGINT
-                || t2ResultType == PrimitiveType.LARGEINT)) {
-            return Type.LARGEINT;
-        }
-        return Type.DOUBLE;
-    }
-
     private static Type getCommonScalarType(ScalarType t1, ScalarType t2) {
         return ScalarType.getAssignmentCompatibleType(t1, t2, true);
     }
@@ -1611,7 +1549,7 @@ public abstract class Type implements Cloneable {
             case DECIMAL32:
             case DECIMAL64:
             case DECIMAL128:
-                return this.getResultType();
+                return this;
             default:
                 return Type.INVALID;
 

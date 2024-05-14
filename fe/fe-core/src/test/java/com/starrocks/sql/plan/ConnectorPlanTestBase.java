@@ -14,6 +14,7 @@
 
 package com.starrocks.sql.plan;
 
+import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
@@ -31,12 +32,15 @@ import com.starrocks.connector.delta.DeltaLakeMetadata;
 import com.starrocks.connector.hive.MockedHiveMetadata;
 import com.starrocks.connector.iceberg.MockIcebergMetadata;
 import com.starrocks.connector.jdbc.MockedJDBCMetadata;
+import com.starrocks.connector.kudu.KuduMetadata;
 import com.starrocks.connector.paimon.PaimonMetadata;
 import com.starrocks.qe.ConnectContext;
 import com.starrocks.server.CatalogMgr;
 import com.starrocks.server.GlobalStateMgr;
-import io.delta.standalone.DeltaLog;
+import com.starrocks.sql.analyzer.SemanticException;
+import com.starrocks.sql.ast.DropCatalogStmt;
 import org.apache.commons.collections4.map.CaseInsensitiveMap;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.paimon.catalog.Catalog;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogFactory;
@@ -51,6 +55,7 @@ import org.apache.paimon.table.sink.BatchTableCommit;
 import org.apache.paimon.table.sink.BatchTableWrite;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
+import org.elasticsearch.common.Strings;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
 import org.junit.rules.TemporaryFolder;
@@ -60,8 +65,11 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 public class ConnectorPlanTestBase extends PlanTestBase {
+    public static final String MOCK_PAIMON_CATALOG_NAME = "paimon0";
+    public static final String MOCK_KUDU_CATALOG_NAME = "kudu0";
 
     @ClassRule
     public static TemporaryFolder temp = new TemporaryFolder();
@@ -75,10 +83,10 @@ public class ConnectorPlanTestBase extends PlanTestBase {
     public static void doInit(String warehouse) throws Exception {
         PlanTestBase.beforeClass();
         FeConstants.runningUnitTest = true;
-        mockCatalog(connectContext, warehouse);
+        mockAllCatalogs(connectContext, warehouse);
     }
 
-    public static void mockCatalog(ConnectContext ctx, String warehouse) throws Exception {
+    public static void mockAllCatalogs(ConnectContext ctx, String warehouse) throws Exception {
         GlobalStateMgr gsmMgr = ctx.getGlobalStateMgr();
         MockedMetadataMgr metadataMgr = new MockedMetadataMgr(gsmMgr.getLocalMetastore(), gsmMgr.getConnectorMgr());
         gsmMgr.setMetadataMgr(metadataMgr);
@@ -87,6 +95,57 @@ public class ConnectorPlanTestBase extends PlanTestBase {
         mockPaimonCatalogImpl(metadataMgr, warehouse);
         mockIcebergCatalogImpl(metadataMgr);
         mockDeltaLakeCatalog(metadataMgr);
+        mockKuduCatalogImpl(metadataMgr);
+    }
+
+    public static void mockCatalog(ConnectContext ctx, String catalogName) throws Exception {
+        mockCatalog(ctx, catalogName, "");
+    }
+
+    public static void mockCatalog(ConnectContext ctx, String catalogName, String warehouse) throws Exception {
+        GlobalStateMgr gsmMgr = ctx.getGlobalStateMgr();
+        MockedMetadataMgr metadataMgr = new MockedMetadataMgr(gsmMgr.getLocalMetastore(), gsmMgr.getConnectorMgr());
+        gsmMgr.setMetadataMgr(metadataMgr);
+        switch (catalogName) {
+            case MockedHiveMetadata.MOCKED_HIVE_CATALOG_NAME:
+                mockHiveCatalogImpl(metadataMgr);
+                break;
+            case MockedJDBCMetadata.MOCKED_JDBC_CATALOG_NAME:
+                mockJDBCCatalogImpl(metadataMgr);
+                break;
+            case MOCK_PAIMON_CATALOG_NAME:
+                Preconditions.checkState(!Strings.isNullOrEmpty(warehouse));
+                mockPaimonCatalogImpl(metadataMgr, warehouse);
+                break;
+            case MockIcebergMetadata.MOCKED_ICEBERG_CATALOG_NAME:
+                mockIcebergCatalogImpl(metadataMgr);
+                break;
+            case MockedDeltaLakeMetadata.MOCKED_CATALOG_NAME:
+                mockDeltaLakeCatalog(metadataMgr);
+                break;
+            case MOCK_KUDU_CATALOG_NAME:
+                mockKuduCatalogImpl(metadataMgr);
+                break;
+            default:
+                throw new SemanticException("Unsupported catalog type:" + catalogName);
+        }
+    }
+
+    public static void dropAllCatalogs() {
+        try {
+            dropCatalog(MockedHiveMetadata.MOCKED_HIVE_CATALOG_NAME);
+            dropCatalog(MockedJDBCMetadata.MOCKED_JDBC_CATALOG_NAME);
+            dropCatalog(MOCK_PAIMON_CATALOG_NAME);
+            dropCatalog(MockIcebergMetadata.MOCKED_ICEBERG_CATALOG_NAME);
+            dropCatalog(MockedDeltaLakeMetadata.MOCKED_CATALOG_NAME);
+        } catch (Exception e) {
+            // ignore error
+            e.printStackTrace();
+        }
+    }
+
+    public static void dropCatalog(String catalog) {
+        GlobalStateMgr.getCurrentState().getCatalogMgr().dropCatalog(new DropCatalogStmt(catalog));
     }
 
     public static void mockHiveCatalog(ConnectContext ctx) throws DdlException {
@@ -101,7 +160,8 @@ public class ConnectorPlanTestBase extends PlanTestBase {
 
         properties.put("type", "hive");
         properties.put("hive.metastore.uris", "thrift://127.0.0.1:9083");
-        GlobalStateMgr.getCurrentState().getCatalogMgr().createCatalog("hive", "hive0", "", properties);
+        GlobalStateMgr.getCurrentState().getCatalogMgr().createCatalog("hive",
+                MockedHiveMetadata.MOCKED_HIVE_CATALOG_NAME, "", properties);
 
         MockedHiveMetadata mockedHiveMetadata = new MockedHiveMetadata();
         metadataMgr.registerMockedMetadata(MockedHiveMetadata.MOCKED_HIVE_CATALOG_NAME, mockedHiveMetadata);
@@ -191,13 +251,34 @@ public class ConnectorPlanTestBase extends PlanTestBase {
         properties.put("type", "paimon");
         properties.put("paimon.catalog.type", "filesystem");
         properties.put("paimon.catalog.warehouse", warehouse);
-        GlobalStateMgr.getCurrentState().getCatalogMgr().createCatalog("paimon", "paimon0", "", properties);
-
+        GlobalStateMgr.getCurrentState().getCatalogMgr().createCatalog("paimon", MOCK_PAIMON_CATALOG_NAME, "", properties);
         //register paimon catalog
         PaimonMetadata paimonMetadata =
-                new PaimonMetadata("paimon0", new HdfsEnvironment(), paimonNativeCatalog,
-                        "filesystem", null, warehouse);
-        metadataMgr.registerMockedMetadata("paimon0", paimonMetadata);
+                new PaimonMetadata(MOCK_PAIMON_CATALOG_NAME, new HdfsEnvironment(), paimonNativeCatalog);
+        metadataMgr.registerMockedMetadata(MOCK_PAIMON_CATALOG_NAME, paimonMetadata);
+    }
+
+    public static void mockKuduCatalog(ConnectContext ctx) throws DdlException {
+        GlobalStateMgr gsmMgr = ctx.getGlobalStateMgr();
+        MockedMetadataMgr metadataMgr = new MockedMetadataMgr(gsmMgr.getLocalMetastore(), gsmMgr.getConnectorMgr());
+        gsmMgr.setMetadataMgr(metadataMgr);
+        mockKuduCatalogImpl(metadataMgr);
+    }
+
+    private static void mockKuduCatalogImpl(MockedMetadataMgr metadataMgr) throws DdlException {
+        String master = "localhost:7051";
+        String kudu = "kudu";
+        Map<String, String> properties = Maps.newHashMap();
+
+        properties.put("type", kudu);
+        properties.put("kudu.master", master);
+        properties.put("kudu.catalog.type", kudu);
+        GlobalStateMgr.getCurrentState().getCatalogMgr().createCatalog(kudu,
+                MOCK_KUDU_CATALOG_NAME, StringUtils.EMPTY, properties);
+
+        KuduMetadata kuduMetadata = new KuduMetadata(MOCK_KUDU_CATALOG_NAME, new HdfsEnvironment(),
+                master, false, StringUtils.EMPTY, Optional.empty());
+        metadataMgr.registerMockedMetadata(MOCK_KUDU_CATALOG_NAME, kuduMetadata);
     }
 
     public static class MockedDeltaLakeMetadata extends DeltaLakeMetadata {
@@ -218,10 +299,9 @@ public class ConnectorPlanTestBase extends PlanTestBase {
                     .add(new Column("col2", Type.STRING))
                     .build();
             List<String> partitionNames = new ArrayList<>();
-            DeltaLog deltaLog = null;
             long createTime = System.currentTimeMillis();
             DeltaLakeTable table = new DeltaLakeTable(tableId, MOCKED_CATALOG_NAME, MOCKED_DB_NAME, MOCKED_TABLE_NAME,
-                    columns, partitionNames, deltaLog, createTime);
+                    columns, partitionNames, null, null, null, createTime);
 
             MOCK_TABLE_MAP.put(MOCKED_TABLE_NAME, table);
         }
@@ -258,8 +338,8 @@ public class ConnectorPlanTestBase extends PlanTestBase {
         Map<String, String> properties = Maps.newHashMap();
 
         properties.put(JDBCResource.TYPE, "jdbc");
-        properties.put(JDBCResource.DRIVER_CLASS, "com.mysql.cj.jdbc.Driver");
-        properties.put(JDBCResource.URI, "jdbc:mysql://127.0.0.1:3306");
+        properties.put(JDBCResource.DRIVER_CLASS, "org.mariadb.jdbc.Driver");
+        properties.put(JDBCResource.URI, "jdbc:mariadb://127.0.0.1:3306");
         properties.put(JDBCResource.USER, "root");
         properties.put(JDBCResource.PASSWORD, "123456");
         properties.put(JDBCResource.CHECK_SUM, "xxxx");

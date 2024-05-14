@@ -18,9 +18,12 @@
 
 #include "column/binary_column.h"
 #include "column/chunk_extra_data.h"
+#include "column/column_helper.h"
 #include "column/field.h"
 #include "column/fixed_length_column.h"
 #include "column/vectorized_fwd.h"
+#include "testutil/column_test_helper.h"
+#include "testutil/parallel_test.h"
 
 namespace starrocks {
 
@@ -87,8 +90,7 @@ public:
 };
 
 // NOLINTNEXTLINE
-TEST_F(ChunkTest, test_chunk_upgrade_if_overflow) {
-#ifdef NDEBUG
+GROUP_SLOW_TEST_F(ChunkTest, test_chunk_upgrade_if_overflow) {
     size_t row_count = 1 << 30;
     auto c1 = BinaryColumn::create();
     c1->resize(row_count);
@@ -104,7 +106,26 @@ TEST_F(ChunkTest, test_chunk_upgrade_if_overflow) {
     ASSERT_TRUE(st.ok());
     ASSERT_TRUE(chunk->get_column_by_slot_id(1)->is_binary());
     ASSERT_TRUE(chunk->get_column_by_slot_id(2)->is_large_binary());
-#endif
+}
+
+// NOLINTNEXTLINE
+TEST_F(ChunkTest, test_remove_column_by_slot_id) {
+    auto c1 = ColumnTestHelper::build_column<int32_t>({1});
+    auto c2 = ColumnTestHelper::build_column<int32_t>({2});
+    auto c3 = ColumnTestHelper::build_column<int32_t>({3});
+    auto c4 = ColumnTestHelper::build_column<int32_t>({4});
+
+    auto chunk = std::make_shared<Chunk>();
+    chunk->append_column(c1, 1);
+    chunk->append_column(c2, 2);
+    chunk->append_column(c3, 3);
+    chunk->append_column(c4, 4);
+
+    chunk->remove_column_by_slot_id(2);
+    ASSERT_EQ(chunk->get_column_by_slot_id(1)->get(0).get_int32(), 1);
+    ASSERT_FALSE(chunk->is_slot_exist(2));
+    ASSERT_EQ(chunk->get_column_by_slot_id(3)->get(0).get_int32(), 3);
+    ASSERT_EQ(chunk->get_column_by_slot_id(4)->get(0).get_int32(), 4);
 }
 
 // NOLINTNEXTLINE
@@ -135,6 +156,18 @@ TEST_F(ChunkTest, test_chunk_downgrade) {
     ASSERT_FALSE(chunk->has_large_column());
     ASSERT_TRUE(ret.ok());
     ASSERT_FALSE(chunk->has_large_column());
+}
+
+// NOLINTNEXTLINE
+TEST_F(ChunkTest, test_is_column_nullable) {
+    Chunk chunk;
+    auto c1 = ColumnHelper::create_column(TypeDescriptor::from_logical_type(TYPE_INT), false);
+    auto c2 = ColumnHelper::create_column(TypeDescriptor::from_logical_type(TYPE_INT), true);
+    chunk.append_column(c1, 1);
+    chunk.append_column(c2, 2);
+
+    ASSERT_FALSE(chunk.is_column_nullable(1));
+    ASSERT_TRUE(chunk.is_column_nullable(2));
 }
 
 // NOLINTNEXTLINE
@@ -209,7 +242,7 @@ TEST_F(ChunkTest, get_column_by_index) {
 TEST_F(ChunkTest, test_copy_one_row) {
     auto chunk = std::make_unique<Chunk>(make_columns(2), make_schema(2));
 
-    std::unique_ptr<Chunk> new_chunk = chunk->clone_empty_with_tuple();
+    std::unique_ptr<Chunk> new_chunk = chunk->clone_empty();
     for (size_t i = 0; i < chunk->num_rows(); ++i) {
         new_chunk->append(*chunk, i, 1);
     }

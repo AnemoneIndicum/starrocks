@@ -39,7 +39,6 @@ import com.starrocks.catalog.AggregateType;
 import com.starrocks.catalog.Column;
 import com.starrocks.catalog.OlapTable;
 import com.starrocks.catalog.Type;
-import com.starrocks.common.DdlException;
 
 import java.util.Set;
 
@@ -120,17 +119,17 @@ public class MVColumnItem {
         return baseColumnNames;
     }
 
-    public Column toMVColumn(OlapTable olapTable) throws DdlException {
+    public Column toMVColumn(OlapTable olapTable) {
         Column baseColumn = olapTable.getBaseColumn(name);
         Column result;
-        boolean useLightSchemaChange = olapTable.getUseLightSchemaChange();
+        boolean hasUniqueId = olapTable.getMaxColUniqueId() >= 0;
         if (baseColumn == null) {
             result = new Column(name, type, isKey, aggregationType, isAllowNull,
                     null, "");
             if (defineExpr != null) {
                 result.setDefineExpr(defineExpr);
             }
-            if (useLightSchemaChange) {
+            if (hasUniqueId) {
                 int nextUniqueId = olapTable.incAndGetMaxColUniqueId();
                 result.setUniqueId(nextUniqueId);
             }
