@@ -47,12 +47,16 @@ public class DataCacheSelectExecutor {
         // make sure all accessed data must be cached
         tmpSessionVariable.setEnableDataCacheAsyncPopulateMode(false);
         tmpSessionVariable.setEnableDataCacheIOAdaptor(false);
+        tmpSessionVariable.setDataCacheEvictProbability(100);
         connectContext.setSessionVariable(tmpSessionVariable);
 
         InsertStmt insertStmt = statement.getInsertStmt();
         StmtExecutor stmtExecutor = new StmtExecutor(connectContext, insertStmt);
-        // register new StmtExecutor into current ConnectContext's StmtExecutor, so we can handle ctrl+c command
-        connectContext.getExecutor().registerSubStmtExecutor(stmtExecutor);
+        // Register new StmtExecutor into current ConnectContext's StmtExecutor, so we can handle ctrl+c command
+        // If DataCacheSelect is forward to leader, connectContext's Executor is null
+        if (connectContext.getExecutor() != null) {
+            connectContext.getExecutor().registerSubStmtExecutor(stmtExecutor);
+        }
         stmtExecutor.execute();
 
         if (connectContext.getState().isError()) {

@@ -143,8 +143,6 @@ public class ConnectContext {
     protected volatile boolean isKilled;
     // Db
     protected String currentDb = "";
-    // warehouse
-    protected String currentWarehouse;
     // `qualifiedUser` is the user used when the user establishes connection and authentication.
     // It is the real user used for this connection.
     // Different from the `currentUserIdentity` authentication user of execute as,
@@ -804,8 +802,7 @@ public class ConnectContext {
                         break;
                     }
                 } catch (InterruptedException e) {
-                    LOG.warn(e);
-                    LOG.warn("sleep exception, ignore.");
+                    LOG.warn("sleep exception, ignore.", e);
                     break;
                 }
             }
